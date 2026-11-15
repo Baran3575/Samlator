@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/samlator-core",
+    "crates/samlator-compositor",
+    "crates/samlator-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.79"
+license = "Apache-2.0"
+repository = "https://github.com/Baran3575/Samlator"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+zstd = "0.14"
+tar = "0.4"
+tracing = "0.1"
+thiserror = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

@@ -1,0 +1,23 @@
+[package]
+name = "samlator-compositor"
+description = "A small, pure-Rust Wayland compositor: windows, pointer, cursor, software compositing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+samlator-core = { path = "../samlator-core" }
+smithay = { version = "0.7", default-features = false, features = [
+    "wayland_frontend",
+] }
+# libxkbcommon is compiled from source for aarch64-linux-android in CI, so the
+# keymap handling needs no system Wayland library at all.
+xkbcommon = { version = "0.8", default-features = false, features = ["wayland"] }
+serde = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,38 @@
+[package]
+name = "samlator-app"
+description = "Samlator: a lean Linux/ARM64 desktop for Android, written in Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "samlator"
+path = "src/main.rs"
+
+[dependencies]
+samlator-core = { path = "../samlator-core" }
+samlator-compositor = { path = "../samlator-compositor" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+egui = "0.37"
+egui-wgpu = { version = "0.37", features = ["winit"] }
+wgpu = "30"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+ndk = { version = "0.9" }
+
+[target.'cfg(target_os = "android")'.dependencies.log]
+version = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "samlator_app"
+crate-type = ["cdylib", "rlib"]
