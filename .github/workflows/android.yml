@@ -62,7 +62,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends meson ninja-build \
-            libxkbcommon-dev libwayland-dev pkg-config x11-xkb-utils
+            libxkbcommon-dev libwayland-dev pkg-config xkb-data zstd
           scripts/build-xkbcommon.sh host
           scripts/build-xkbcommon.sh android
 

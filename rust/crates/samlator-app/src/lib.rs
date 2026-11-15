@@ -111,11 +111,13 @@ mod android_entry {
 
     #[cfg(feature = "safe-boot")]
     fn run(app: AndroidApp) {
+        let early_app = app.clone();
         crate::safe::run(app)
     }
 
     #[cfg(not(feature = "safe-boot"))]
     fn run(app: AndroidApp) {
+        let early_app = app.clone();
 
         let base = app
             .internal_data_path()
@@ -135,6 +137,11 @@ mod android_entry {
         boot::note(&rt.paths, "runtime ready");
         rt.push_log(format!("Samlator {} başladı", env!("CARGO_PKG_VERSION")));
         rt.push_log(format!("veri dizini: {}", rt.paths.base().display()));
+        // The compositor's seat needs XKB rules on the filesystem.
+        if let Some(xkb) = boot::ensure_xkb(&early_app, &rt.paths) {
+            std::env::set_var("XKB_CONFIG_ROOT", &xkb);
+        }
+
         let mut ui_state = ui::UiState::default();
         if let Some(previous) = boot::take_last_panic() {
             rt.push_log(format!("önceki çökme: {previous}"));
@@ -147,6 +154,7 @@ mod android_entry {
         let mut quit = false;
         let mut setup_started = false;
         let mut gpu_error: Option<String> = None;
+        let mut last_frame_seq = 0u64;
 
         while !quit {
             let mut need_redraw = false;
@@ -283,14 +291,20 @@ mod android_entry {
             rt.poll();
             rt.ensure_compositor(size.0, size.1, scale as f64);
 
+            let mut new_frame = false;
             if let Some(frame) = rt.compositor.as_ref().and_then(|c| c.frame()) {
+                if frame.seq != last_frame_seq {
+                    last_frame_seq = frame.seq;
+                    new_frame = true;
+                }
                 if let Some(g) = gpu.as_mut() {
                     g.upload(&frame);
                 }
             }
 
             if let Some(g) = gpu.as_mut() {
-                if need_redraw || input_available || rt.is_busy() || frame_changed(&rt) {
+                // Painting every frame would idle the GPU at 60 Hz for nothing.
+                if need_redraw || input_available || rt.is_busy() || new_frame {
                     let raw = egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -301,19 +315,28 @@ mod android_entry {
                     };
                     let action = g.render(&mut rt, &mut ui_state, raw).unwrap_or(Action::None);
 
-                    // Keys the on-screen keyboard produced this frame.
+                    // Keys the on-screen keyboard produced this frame. Latched
+                    // modifiers have to be pressed *around* the key, otherwise a
+                    // Ctrl+click style chord never reaches the guest.
+                    let modifiers = ui_state.mods.active_codes();
                     for (request, pressed) in ui_state.keys.drain(..) {
-                        let code = match request {
+                        let Some(code) = (match request {
                             KeyRequest::Char(c) => crate::keyboard::code_for_char(c),
                             KeyRequest::Key(code) => Some(code),
+                        }) else {
+                            continue;
                         };
-                        if let Some(code) = code {
-                            rt.key(code, pressed);
+                        if pressed {
+                            for m in &modifiers {
+                                rt.key(*m, true);
+                            }
+                            rt.key(code, true);
+                        } else {
+                            rt.key(code, false);
+                            for m in &modifiers {
+                                rt.key(*m, false);
+                            }
                         }
-                    }
-                    // Hold modifiers from the previous frame while typing.
-                    for code in ui_state.mods.active_codes() {
-                        rt.key(code, false);
                     }
 
                     // Provision only once the desktop is visibly running, so a
@@ -346,10 +369,4 @@ mod android_entry {
         rt.stop_session();
     }
 
-    fn frame_changed(rt: &Runtime) -> bool {
-        rt.compositor
-            .as_ref()
-            .map(|c| c.frame().is_some())
-            .unwrap_or(false)
-    }
 }

@@ -46,6 +46,19 @@ pub fn is_payload_ready(sys_root: &Path, target: &str) -> bool {
 ///
 /// Device nodes and FIFOs are skipped: an unprivileged Android process cannot
 /// create them, and nothing we run needs them.
+/// Extract an archive that is already in memory (APK assets cannot be mmapped).
+pub fn extract_tar_zst_bytes(bytes: &[u8], dest: &Path, strip: u32) -> Result<()> {
+    let tmp = dest.with_extension("tar.zst.tmp");
+    if let Some(parent) = tmp.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&tmp, bytes)?;
+    let mut noop = |_: Progress| {};
+    let result = extract_tar_zst(&tmp, dest, strip, &mut noop);
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
 pub fn extract_tar_zst(
     archive: &Path,
     dest: &Path,

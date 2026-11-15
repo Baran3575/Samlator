@@ -236,7 +236,11 @@ impl State {
                         serial,
                         time: self.time_ms(),
                     };
-                    pointer.motion(self, focus.map(|s| (s, (0.0, 0.0).into())), &event);
+                    // Every window is maximised at the origin, so the surface
+                    // local position is the screen position. Passing (0, 0) here
+                    // would send every click to the client's top-left corner.
+                    let local: Point<f64, Logical> = clamped;
+                    pointer.motion(self, focus.map(|s| (s, local)), &event);
                     pointer.frame(self);
                 }
                 self.dirty = true;

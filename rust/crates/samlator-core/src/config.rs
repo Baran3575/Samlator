@@ -23,31 +23,44 @@ pub enum GpuBackend {
 
 impl GpuBackend {
     /// Chromium switches appended to every Electron launch.
+    ///
+    /// Tuned for the S24 FE's Xclipse 940 (RDNA3, Vulkan 1.3): ANGLE on top of
+    /// the native Vulkan driver is the only path that gives hardware
+    /// rasterisation inside PRoot, because the guest cannot use DRM directly.
     pub fn chromium_flags(self) -> Vec<String> {
-        let base = vec![
-            "--ozone-platform=wayland".to_string(),
-            "--enable-features=UseOzonePlatform,WaylandWindowDecorations".to_string(),
-            "--disable-gpu-sandbox".to_string(),
-            "--no-sandbox".to_string(),
-            "--in-process-gpu".to_string(),
+        // `--ozone-platform=wayland` is the whole point: no X11 anywhere.
+        // We do not implement xdg-decoration, so client-side decorations are
+        // forced; requesting server-side ones just gives a undecorated window.
+        let mut features = vec!["UseOzonePlatform"];
+        let mut flags: Vec<String> = vec![
+            "--ozone-platform=wayland".into(),
+            "--disable-features=WaylandWindowDecorations".into(),
+            "--disable-gpu-sandbox".into(),
+            "--no-sandbox".into(),
+            // PRoot confuses Chromium's zygote; one process avoids the hangs.
+            "--in-process-gpu".into(),
+            // /dev/shm inside the guest is a directory, not a tmpfs.
+            "--disable-dev-shm-usage".into(),
+            "--enable-gpu-rasterization".into(),
         ];
-        let mut flags = base.clone();
-        flags.extend(match self {
-            GpuBackend::AngleVulkan => vec![
-                "--use-gl=angle".to_string(),
-                "--use-angle=vulkan".to_string(),
-                "--enable-unsafe-webgpu".to_string(),
-            ],
-            GpuBackend::AngleGles => vec![
-                "--use-gl=angle".to_string(),
-                "--use-angle=gles-egl".to_string(),
-            ],
-            GpuBackend::SwiftShader => vec![
-                "--use-gl=angle".to_string(),
-                "--use-angle=swiftshader".to_string(),
-                "--disable-gpu-compositing".to_string(),
-            ],
-        });
+        match self {
+            GpuBackend::AngleVulkan => {
+                features.push("Vulkan");
+                flags.push("--use-gl=angle".into());
+                flags.push("--use-angle=vulkan".into());
+                flags.push("--enable-unsafe-webgpu".into());
+            }
+            GpuBackend::AngleGles => {
+                flags.push("--use-gl=angle".into());
+                flags.push("--use-angle=gles-egl".into());
+            }
+            GpuBackend::SwiftShader => {
+                flags.push("--use-gl=angle".into());
+                flags.push("--use-angle=swiftshader".into());
+                flags.push("--disable-gpu-compositing".into());
+            }
+        }
+        flags.push(format!("--enable-features={}", features.join(",")));
         flags
     }
 }

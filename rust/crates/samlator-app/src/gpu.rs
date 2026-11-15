@@ -66,7 +66,13 @@ impl Gpu {
         height: u32,
     ) -> Result<Self, String> {
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        instance_desc.backends = wgpu::Backends::all();
+        // Xclipse 940 (RDNA3) has a solid Vulkan 1.3 driver; GL exists as a
+        // fallback for devices where the vendor driver refuses our surface.
+        instance_desc.backends = match std::env::var("SAMLATOR_WGPU_BACKEND").as_deref() {
+            Ok("gl") => wgpu::Backends::GL,
+            Ok("vulkan") => wgpu::Backends::VULKAN,
+            _ => wgpu::Backends::VULKAN | wgpu::Backends::GL,
+        };
         #[cfg(target_os = "android")]
         {
             instance_desc.display = Some(android_display());
@@ -113,7 +119,20 @@ impl Gpu {
             .map_err(|e| format!("request_device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
-        log::info!("surface formats: {:?}", caps.formats);
+        // Fifo keeps the panel at 60 Hz and saves power; Mailbox is only taken
+        // when the driver advertises it, since it can pin one core on mobile.
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::Fifo
+        };
+        log::info!(
+            "surface {}x{} formats {:?} present {:?}",
+            width,
+            height,
+            caps.formats,
+            present_mode
+        );
         let format = caps
             .formats
             .iter()
@@ -129,7 +148,7 @@ impl Gpu {
             color_space: wgpu::SurfaceColorSpace::Auto,
             width,
             height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,

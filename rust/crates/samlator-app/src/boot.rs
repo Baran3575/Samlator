@@ -171,3 +171,31 @@ mod tests {
         let _ = Config::default();
     }
 }
+
+/// Unpack the bundled XKB rules once, so the compositor can build a keymap.
+///
+/// `libxkbcommon` looks them up through `XKB_CONFIG_ROOT`; without this the
+/// seat has no keyboard at all and typing into the guest is impossible.
+#[cfg(target_os = "android")]
+pub fn ensure_xkb(
+    app: &android_activity::AndroidApp,
+    paths: &Paths,
+) -> Option<std::path::PathBuf> {
+    let dest = paths.base().join("sys").join("xkb");
+    let marker = dest.join("rules").join("evdev");
+    if marker.exists() {
+        return Some(dest);
+    }
+    let manager = app.asset_manager();
+    let name = std::ffi::CString::new("xkb.tar.zst").ok()?;
+    let mut asset = manager.open(&name)?;
+    let bytes = asset.buffer().ok()?;
+    note(paths, format!("extracting xkb rules ({} KiB)", bytes.len() / 1024));
+    match samlator_core::rootfs::extract_tar_zst_bytes(bytes, &dest, 0) {
+        Ok(()) => Some(dest),
+        Err(e) => {
+            note(paths, format!("xkb extraction failed: {e}"));
+            None
+        }
+    }
+}
