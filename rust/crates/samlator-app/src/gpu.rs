@@ -64,6 +64,7 @@ impl Gpu {
         window: impl Into<wgpu::SurfaceTarget<'static>>,
         width: u32,
         height: u32,
+        pixels_per_point: f32,
     ) -> Result<Self, String> {
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
         // Xclipse 940 (RDNA3) has a solid Vulkan 1.3 driver; GL exists as a
@@ -157,6 +158,10 @@ impl Gpu {
 
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
+        // Without this egui assumes one pixel per point, so a 2340x1080 surface
+        // gets a UI drawn as if it were 2340x1080 *points*: everything lands in
+        // the top-left corner and text rasterises into unreadable boxes.
+        egui_ctx.set_pixels_per_point(pixels_per_point.max(0.5));
         let egui_renderer = egui_wgpu::Renderer::new(
             &device,
             format,
@@ -183,9 +188,13 @@ impl Gpu {
         })
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub fn resize(&mut self, width: u32, height: u32, pixels_per_point: f32) {
         if width == 0 || height == 0 {
             return;
+        }
+        let ppp = pixels_per_point.max(0.5);
+        if (self.egui_ctx.pixels_per_point() - ppp).abs() > 0.01 {
+            self.egui_ctx.set_pixels_per_point(ppp);
         }
         self.size = (width, height);
         self.config.width = width;

@@ -43,15 +43,16 @@ pub fn run(app: AndroidApp) {
             if (w, h) != size {
                 size = (w, h);
                 if let Some(g) = gpu.as_mut() {
-                    g.resize(w, h);
+                    g.resize(w, h, (w.min(h) as f32 / 411.0).max(1.0));
                 }
                 boot::note_path_buf(&base, &format!("safe-boot: surface {w}x{h}"));
             }
             if gpu.is_none() && !tried_gpu {
                 tried_gpu = true;
                 let target = wgpu::SurfaceTarget::from_window_without_display(window.clone());
+                let ppp = (w.min(h) as f32 / 411.0).max(1.0);
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    Gpu::new(target, size.0, size.1)
+                    Gpu::new(target, size.0, size.1, ppp)
                 })) {
                     Ok(Ok(g)) => {
                         gpu = Some(g);

@@ -180,7 +180,7 @@ mod android_entry {
                     scale = (w.min(h) as f32 / 411.0).max(1.0);
                     boot::note(&rt.paths, format!("surface {w}x{h} @ scale {scale:.3}"));
                     if let Some(g) = gpu.as_mut() {
-                        g.resize(w, h);
+                        g.resize(w, h, scale);
                     }
                     if let Some(c) = rt.compositor.as_ref() {
                         c.set_display(w, h, scale as f64);
@@ -189,8 +189,9 @@ mod android_entry {
                 if gpu.is_none() && gpu_error.is_none() {
                     let target = wgpu::SurfaceTarget::from_window_without_display(window.clone());
                     let (w0, h0) = size;
+                    let ppp = scale;
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        Gpu::new(target, w0, h0)
+                        Gpu::new(target, w0, h0, ppp)
                     })) {
                         Ok(Ok(g)) => {
                             boot::note(&rt.paths, "gpu ready");
