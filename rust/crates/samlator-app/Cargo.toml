@@ -18,7 +18,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 egui = "0.37"
-egui-wgpu = { version = "0.37", features = ["winit"] }
+egui-wgpu = "0.37"
 wgpu = "30"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
