@@ -151,11 +151,11 @@ pub fn draw(ctx: &egui::Context, mods: &mut Modifiers, visible: &mut bool) -> Ve
                     out.push((KeyRequest::Key(evdev::ESC), true));
                     out.push((KeyRequest::Key(evdev::ESC), false));
                 }
-                if ui.add(egui::Button::new(RichText::new("␣").color(TEXT)).fill(KEY)).clicked() {
+                if ui.add(egui::Button::new(RichText::new("SPC").color(TEXT)).fill(KEY)).clicked() {
                     out.push((KeyRequest::Key(evdev::SPACE), true));
                     out.push((KeyRequest::Key(evdev::SPACE), false));
                 }
-                if key_button(ui, "⌫").clicked() {
+                if key_button(ui, "BKSP").clicked() {
                     out.push((KeyRequest::Key(evdev::BACKSPACE), true));
                     out.push((KeyRequest::Key(evdev::BACKSPACE), false));
                 }
@@ -163,7 +163,7 @@ pub fn draw(ctx: &egui::Context, mods: &mut Modifiers, visible: &mut bool) -> Ve
                     out.push((KeyRequest::Key(evdev::ENTER), true));
                     out.push((KeyRequest::Key(evdev::ENTER), false));
                 }
-                if key_button(ui, "←").clicked() {
+                if key_button(ui, "LEFT").clicked() {
                     send_arrow(&mut out, evdev::LEFT);
                 }
                 if key_button(ui, "↑").clicked() {
@@ -172,7 +172,7 @@ pub fn draw(ctx: &egui::Context, mods: &mut Modifiers, visible: &mut bool) -> Ve
                 if key_button(ui, "↓").clicked() {
                     send_arrow(&mut out, evdev::DOWN);
                 }
-                if key_button(ui, "→").clicked() {
+                if key_button(ui, "RIGHT").clicked() {
                     send_arrow(&mut out, evdev::RIGHT);
                 }
                 if ui.add(egui::Button::new(RichText::new("gizle").color(TEXT)).fill(KEY)).clicked() {

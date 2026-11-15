@@ -130,7 +130,7 @@ pub fn draw(root: &mut egui::Ui, rt: &mut Runtime, ui_state: &mut UiState) -> Ac
                         continue;
                     }
                     let label = if w.title.is_empty() { "pencere" } else { &w.title };
-                    let text = RichText::new(format!("▣ {label}")).size(12.0).color(if w.focused { ACCENT } else { DIM });
+                    let text = RichText::new(format!("> {label}")).size(12.0).color(if w.focused { ACCENT } else { DIM });
                     ui.label(text);
                 }
             });

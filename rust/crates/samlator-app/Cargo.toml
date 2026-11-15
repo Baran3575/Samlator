@@ -22,7 +22,7 @@ samlator-compositor = { path = "../samlator-compositor" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-egui = "0.37"
+egui = { version = "0.37", features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui-wgpu = "0.37"
 wgpu = "30"
 pollster = "0.4"
