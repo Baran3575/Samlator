@@ -16,6 +16,9 @@ pub fn run(app: AndroidApp) {
         .internal_data_path()
         .unwrap_or_else(|| std::path::PathBuf::from("/data/local/tmp/samlator"));
     std::env::set_var("SAMLATOR_HOME", &base);
+    if let Some(ext) = app.external_data_path() {
+        std::env::set_var("SAMLATOR_EXT", &ext);
+    }
     boot::note_path_buf(&base, "safe-boot: android_main start");
 
     let mut gpu: Option<Gpu> = None;

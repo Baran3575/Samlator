@@ -19,14 +19,36 @@ pub fn note(paths: &Paths, msg: impl AsRef<str>) {
     log::info!("{msg}");
     let dir = paths.logs();
     let _ = std::fs::create_dir_all(&dir);
-    append(dir.join("boot.log"), &format!("{msg}\n"));
-    append(shared_log(), &format!("{msg}\n"));
+    fan_out(dir.join("boot.log"), &format!("{msg}\n"));
 }
 
 /// The app's private dirs are unreadable on a stock phone, so the same lines go
 /// to `/sdcard/Android/media/dev.samlator/boot.log`, which `Termux` can `cat`.
 pub fn shared_log() -> std::path::PathBuf {
-    std::path::PathBuf::from("/sdcard/Android/media/dev.samlator/boot.log")
+    shared_logs()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| std::path::PathBuf::from("/data/local/tmp/samlator-boot.log"))
+}
+
+/// Every place worth mirroring the boot log to, best first.
+pub fn shared_logs() -> Vec<std::path::PathBuf> {
+    let mut out = vec![
+        std::path::PathBuf::from("/sdcard/Android/media/dev.samlator/boot.log"),
+        std::path::PathBuf::from("/storage/emulated/0/Android/media/dev.samlator/boot.log"),
+    ];
+    if let Some(ext) = std::env::var_os("SAMLATOR_EXT") {
+        out.push(std::path::PathBuf::from(ext).join("boot.log"));
+    }
+    out
+}
+
+/// Write to the private log and to every shared location.
+fn fan_out(private: std::path::PathBuf, line: &str) {
+    append(private, line);
+    for p in shared_logs() {
+        append(p, line);
+    }
 }
 
 fn append(path: std::path::PathBuf, line: &str) {
@@ -47,8 +69,7 @@ fn append(path: std::path::PathBuf, line: &str) {
 /// Append one line using an already-known data dir (startup path only).
 pub fn note_path_buf(base: &std::path::Path, msg: &str) {
     log::info!("{msg}");
-    append(base.join("sys").join("logs").join("boot.log"), &format!("{msg}\n"));
-    append(shared_log(), &format!("{msg}\n"));
+    fan_out(base.join("sys").join("logs").join("boot.log"), &format!("{msg}\n"));
 }
 
 /// Turn a `catch_unwind` payload into a readable sentence.
@@ -80,7 +101,9 @@ pub fn install_panic_hook() {
             *slot = Some(text.clone());
         }
         log::error!("{text}");
-        append(shared_log(), &format!("{text}\n"));
+        for p in shared_logs() {
+            append(p, &format!("{text}\n"));
+        }
         // No `Paths` here: the hook may run before the app knows its data dir.
         if let Some(dir) = log_dir() {
             append(dir.join("boot.log"), &format!("{text}\n"));

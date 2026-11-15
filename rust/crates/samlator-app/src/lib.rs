@@ -114,6 +114,9 @@ mod android_entry {
             .unwrap_or_else(|| PathBuf::from("/data/local/tmp/samlator"));
         // The panic hook runs before the app has a `Paths`, so publish it first.
         std::env::set_var("SAMLATOR_HOME", &base);
+        if let Some(ext) = app.external_data_path() {
+            std::env::set_var("SAMLATOR_EXT", &ext);
+        }
         boot::note_path_buf(&base, "android_main: start");
 
         let paths = Paths::resolve(Some(&base));
