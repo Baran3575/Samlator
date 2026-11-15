@@ -97,6 +97,12 @@ pub(crate) struct Window {
     pub(crate) title: String,
     pub(crate) app_id: String,
     pub(crate) mapped: bool,
+    /// Pixels copied out of the last committed buffer, so a moving cursor does
+    /// not force a full copy of every window.
+    pub(crate) pixels: Option<CopyResult>,
+    /// Set on every surface commit; cleared once the new buffer was copied and
+    /// released (releasing twice would confuse the client).
+    pub(crate) dirty: bool,
 }
 
 pub struct State {
@@ -389,23 +395,33 @@ impl State {
         let area = Rect::new(0, 0, self.size.0.max(1), self.size.1.max(1));
         draw_shadow(&mut shared.frame, area, 6);
 
-        for win in self.windows.iter() {
+        for win in self.windows.iter_mut() {
             if !win.mapped || !win.toplevel.alive() {
                 continue;
             }
-            let surface = win.toplevel.wl_surface().clone();
             let target = Rect::new(0, 0, shared.frame.width, shared.frame.height);
-            // Copy the shm buffer into our own frame while the client state is
-            // borrowed, then blit. Nothing is held across the borrow.
-            let copied = with_states(&surface, |states| {
-                let mut attrs = states.cached_state.get::<SurfaceAttributes>();
-                let current = attrs.current();
-                let Some(BufferAssignment::NewBuffer(buffer)) = current.buffer.as_ref() else {
-                    return None;
-                };
-                copy_buffer(buffer)
-            });
-            if let Some(src) = copied {
+            if win.dirty {
+                let surface = win.toplevel.wl_surface().clone();
+                // Copy the shm buffer while the client state is borrowed, then
+                // release it. Nothing is held across the borrow.
+                let copied = with_states(&surface, |states| {
+                    let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+                    let current = attrs.current();
+                    let Some(BufferAssignment::NewBuffer(buffer)) = current.buffer.as_ref() else {
+                        return None;
+                    };
+                    let out = copy_buffer(buffer);
+                    // Without this the client never learns the buffer is free
+                    // again and stalls after the second frame.
+                    buffer.release();
+                    out
+                });
+                if copied.is_some() {
+                    win.pixels = copied;
+                    win.dirty = false;
+                }
+            }
+            if let Some(src) = win.pixels.as_ref() {
                 blit_argb(
                     &mut shared.frame,
                     target,
@@ -507,6 +523,9 @@ impl CompositorHandler for State {
                         self.give_keyboard_focus();
                     }
                 }
+                if let Some(w) = self.windows.get_mut(idx) {
+                    w.dirty = true;
+                }
                 self.dirty = true;
                 return;
             }
@@ -559,6 +578,8 @@ impl XdgShellHandler for State {
             title,
             app_id,
             mapped: false,
+            pixels: None,
+            dirty: true,
         });
         let index = self.windows.len() - 1;
         self.focused = Some(index);
