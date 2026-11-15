@@ -20,7 +20,8 @@ use smithay::reexports::calloop::channel::{
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use smithay::wayland::socket::ListeningSocketSource;
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::{Interest, Mode, PostAction};
 
 pub use desktop::{Frame, Rect};
 pub use state::{
@@ -215,21 +216,45 @@ fn build_session(cfg: DisplayConfig, runtime_dir: &Path) -> Result<Session, Stri
     let state = State::new(&handle, width, height, cfg.scale, cfg.refresh_hz);
     let shared = state.shared();
 
-    let listening =
-        ListeningSocketSource::with_name("wayland-0").map_err(|e| format!("{e:?}"))?;
-    let socket = listening.socket_name().to_string_lossy().to_string();
+    // Bind the socket ourselves instead of using `ListeningSocketSource`:
+    // that helper resolves the path through the process-wide `XDG_RUNTIME_DIR`,
+    // which makes tests (and any second instance) racy.
+    std::fs::create_dir_all(runtime_dir).map_err(|e| format!("{e}"))?;
+    let socket_path = runtime_dir.join("wayland-0");
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path)
+        .map_err(|e| format!("bind {}: {e}", socket_path.display()))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("{e}"))?;
+    let socket = "wayland-0".to_string();
 
     let loop_handle = event_loop.handle();
     loop_handle
-        .insert_source(listening, |stream, _, state: &mut State| {
-            match state
-                .display_handle
-                .insert_client(stream, Arc::new(ClientState::default()))
-            {
-                Ok(_client) => tracing::info!("wayland client connected"),
-                Err(e) => tracing::warn!("client insert failed: {e}"),
-            }
-        })
+        .insert_source(
+            Generic::new(listener, Interest::READ, Mode::Level),
+            |_, listener, state: &mut State| {
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            match state
+                                .display_handle
+                                .insert_client(stream, Arc::new(ClientState::default()))
+                            {
+                                Ok(_) => tracing::info!("wayland client connected"),
+                                Err(e) => tracing::warn!("client insert failed: {e}"),
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(e) => {
+                            tracing::warn!("wayland accept failed: {e}");
+                            break;
+                        }
+                    }
+                }
+                Ok(PostAction::Continue)
+            },
+        )
         .map_err(|e| format!("{e:?}"))?;
 
     let (cmd, rx): (ChannelSender<Command>, Channel<Command>) = make_channel();
@@ -250,7 +275,6 @@ fn build_session(cfg: DisplayConfig, runtime_dir: &Path) -> Result<Session, Stri
         })
         .map_err(|e| format!("{e:?}"))?;
 
-    let _ = runtime_dir;
     Ok(((cmd, shared, socket), event_loop, display, state))
 }
 

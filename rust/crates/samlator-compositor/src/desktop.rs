@@ -292,11 +292,13 @@ mod tests {
     #[test]
     fn alpha_blend_keeps_transparency() {
         let mut f = Frame::new(2, 2);
-        let src: Vec<u8> = vec![0, 0, 255, 128].repeat(4);
+        // wl_shm ARGB8888 on little endian means the bytes are B, G, R, A.
+        let src: Vec<u8> = vec![255, 0, 0, 128].repeat(4);
         blit_argb(&mut f, Rect::new(0, 0, 2, 2), &src, 2, 2, 8, false);
         let p = px(&f, 0, 0);
-        assert_eq!(p[3], 128);
-        assert_eq!(p[2], 255);
+        assert_eq!(p[3], 128, "alpha must survive");
+        assert_eq!(p[2], 255, "blue must survive");
+        assert_eq!(p[0], 0, "red must stay empty");
     }
 
     #[test]
