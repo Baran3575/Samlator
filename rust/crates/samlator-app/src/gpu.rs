@@ -120,12 +120,13 @@ impl Gpu {
             .map_err(|e| format!("request_device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
-        // Fifo keeps the panel at 60 Hz and saves power; Mailbox is only taken
-        // when the driver advertises it, since it can pin one core on mobile.
-        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-            wgpu::PresentMode::Mailbox
-        } else {
-            wgpu::PresentMode::Fifo
+        // Fifo by default: Mailbox on the Xclipse driver can hand back a
+        // partially rendered swapchain image, which shows up as garbage.
+        let present_mode = match std::env::var("SAMLATOR_PRESENT").as_deref() {
+            Ok("mailbox") if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) => {
+                wgpu::PresentMode::Mailbox
+            }
+            _ => wgpu::PresentMode::Fifo,
         };
         log::info!(
             "surface {}x{} formats {:?} present {:?}",
