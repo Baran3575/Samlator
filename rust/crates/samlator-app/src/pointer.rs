@@ -151,6 +151,8 @@ mod tests {
     #[test]
     fn points_divide_by_the_display_scale() {
         let p = Pointer { pos: (1170.0, 540.0), ..Default::default() };
-        assert_eq!(p.points(2.6), (450.0, 207.69));
+        let (x, y) = p.points(2.6);
+        assert!((x - 450.0).abs() < 0.01, "x was {x}");
+        assert!((y - 207.6923).abs() < 0.01, "y was {y}");
     }
 }
