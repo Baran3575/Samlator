@@ -8,6 +8,11 @@
 set -euo pipefail
 
 PROFILE="${1:-release}"
+# SAMLATOR_SAFE=1 builds the diagnostic front end (surface + egui only).
+FEATURES=""
+if [ "${SAMLATOR_SAFE:-0}" = "1" ]; then
+    FEATURES="--features safe-boot"
+fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ABI_DIR="$ROOT/android/app/src/main/jniLibs/arm64-v8a"
 ASSET_XKB="$ROOT/android/app/src/main/assets/xkb"
@@ -24,7 +29,7 @@ mkdir -p "$ABI_DIR"
 (
     cd "$ROOT/rust"
     CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-L native=$DEPS/lib" \
-        cargo ndk -t arm64-v8a -P 29 build --$PROFILE -p samlator-app
+        cargo ndk -t arm64-v8a -P 29 build --$PROFILE -p samlator-app $FEATURES
 )
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/rust/target}"

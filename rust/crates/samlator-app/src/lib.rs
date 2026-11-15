@@ -11,6 +11,8 @@ pub mod boot;
 pub mod gpu;
 pub mod keyboard;
 pub mod runtime;
+#[cfg(feature = "safe-boot")]
+pub mod safe;
 pub mod ui;
 
 /// Uygulama giriş noktası; NativeActivity tarafından çağrılır.
@@ -62,10 +64,50 @@ mod android_entry {
         Some(code)
     }
 
+    /// Entry point the Android glue calls on its dedicated thread.
+    ///
+    /// Everything runs inside `catch_unwind`: if the desktop cannot start we
+    /// must not let the Activity vanish without a trace — a silent close is
+    /// impossible to diagnose on a phone without `adb`.
     #[no_mangle]
     pub fn android_main(app: AndroidApp) {
         samlator_core::init_logging("Samlator");
         boot::install_panic_hook();
+
+        let guardian = app.clone();
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(app))) {
+            let why = boot::describe_panic(&payload);
+            let base = guardian
+                .internal_data_path()
+                .unwrap_or_else(|| PathBuf::from("/data/local/tmp/samlator"));
+            boot::note_path_buf(&base, &format!("FATAL android_main: {why}"));
+            stay_alive(guardian);
+        }
+    }
+
+    /// Keep the process (and so the screen) alive after a fatal error, so the
+    /// launcher does not look like it "closed by itself".
+    fn stay_alive(app: AndroidApp) {
+        loop {
+            let mut destroy = false;
+            app.poll_events(Some(Duration::from_millis(250)), |event| {
+                if let PollEvent::Main(MainEvent::Destroy) = event {
+                    destroy = true;
+                }
+            });
+            if destroy {
+                return;
+            }
+        }
+    }
+
+    #[cfg(feature = "safe-boot")]
+    fn run(app: AndroidApp) {
+        crate::safe::run(app)
+    }
+
+    #[cfg(not(feature = "safe-boot"))]
+    fn run(app: AndroidApp) {
 
         let base = app
             .internal_data_path()

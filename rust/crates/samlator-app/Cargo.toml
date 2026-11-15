@@ -11,6 +11,11 @@ repository.workspace = true
 name = "samlator"
 path = "src/main.rs"
 
+[features]
+# Diagnostic build: Android surface + egui only, no desktop stack.
+default = []
+safe-boot = []
+
 [dependencies]
 samlator-core = { path = "../samlator-core" }
 samlator-compositor = { path = "../samlator-compositor" }

@@ -12,18 +12,32 @@ use samlator_core::paths::Paths;
 
 static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
 
-/// Append one line to `sys/logs/boot.log`, ignoring I/O errors.
+/// Append one line to `sys/logs/boot.log` and to the shared boot log below,
+/// ignoring I/O errors.
 pub fn note(paths: &Paths, msg: impl AsRef<str>) {
     let msg = msg.as_ref();
     log::info!("{msg}");
     let dir = paths.logs();
     let _ = std::fs::create_dir_all(&dir);
-    let line = format!("{}\n", msg);
+    append(dir.join("boot.log"), &format!("{msg}\n"));
+    append(shared_log(), &format!("{msg}\n"));
+}
+
+/// The app's private dirs are unreadable on a stock phone, so the same lines go
+/// to `/sdcard/Android/media/dev.samlator/boot.log`, which `Termux` can `cat`.
+pub fn shared_log() -> std::path::PathBuf {
+    std::path::PathBuf::from("/sdcard/Android/media/dev.samlator/boot.log")
+}
+
+fn append(path: std::path::PathBuf, line: &str) {
     use std::io::Write;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join("boot.log"))
+        .open(&path)
     {
         let _ = f.write_all(line.as_bytes());
         let _ = f.flush();
@@ -33,16 +47,8 @@ pub fn note(paths: &Paths, msg: impl AsRef<str>) {
 /// Append one line using an already-known data dir (startup path only).
 pub fn note_path_buf(base: &std::path::Path, msg: &str) {
     log::info!("{msg}");
-    let dir = base.join("sys").join("logs");
-    let _ = std::fs::create_dir_all(&dir);
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("boot.log"))
-    {
-        let _ = writeln!(f, "{msg}");
-    }
+    append(base.join("sys").join("logs").join("boot.log"), &format!("{msg}\n"));
+    append(shared_log(), &format!("{msg}\n"));
 }
 
 /// Turn a `catch_unwind` payload into a readable sentence.
@@ -74,16 +80,10 @@ pub fn install_panic_hook() {
             *slot = Some(text.clone());
         }
         log::error!("{text}");
+        append(shared_log(), &format!("{text}\n"));
         // No `Paths` here: the hook may run before the app knows its data dir.
         if let Some(dir) = log_dir() {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(dir.join("boot.log"))
-            {
-                let _ = writeln!(f, "{text}");
-            }
+            append(dir.join("boot.log"), &format!("{text}\n"));
         }
         previous(info);
     }));

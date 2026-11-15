@@ -157,19 +157,46 @@ impl Gpu {
         }
     }
 
-    /// One frame: egui input, texture upload, single render pass.
+    /// One desktop frame: egui input, texture upload, single render pass.
     pub fn render(
         &mut self,
         rt: &mut Runtime,
         ui_state: &mut UiState,
-        mut raw_input: egui::RawInput,
+        raw_input: egui::RawInput,
     ) -> Option<Action> {
         let mut action = None;
+        self.paint_frame(raw_input, |_, root| {
+            action = Some(ui::draw(root, rt, ui_state));
+        });
+        action
+    }
+
+    /// Draw with a caller-supplied painter instead of the desktop UI.
+    pub fn render_raw(
+        &mut self,
+        raw_input: egui::RawInput,
+        paint: impl FnOnce(&egui::Context, &mut egui::Ui),
+    ) -> Option<()> {
+        let cell = std::cell::Cell::new(Some(paint));
+        self.paint_frame(raw_input, |ctx, root| {
+            if let Some(p) = cell.take() {
+                p(ctx, root);
+            }
+        })
+        .map(|_| ())
+    }
+
+    fn paint_frame(
+        &mut self,
+        mut raw_input: egui::RawInput,
+        paint: impl FnOnce(&egui::Context, &mut egui::Ui),
+    ) -> Option<()> {
         // Without this egui refuses to allocate the full-screen desktop texture.
         raw_input.max_texture_side = Some(self.max_side);
         let ctx = self.egui_ctx.clone();
         let desktop = self.desktop.as_ref().map(|h| h.id());
 
+        let cell = std::cell::Cell::new(Some(paint));
         let full = ctx.run_ui(raw_input, |root| {
             let screen = root.max_rect().size();
             if let Some(id) = desktop {
@@ -181,7 +208,9 @@ impl Gpu {
                         ui.add(egui::Image::new((id, screen)));
                     });
             }
-            action = Some(ui::draw(root, rt, ui_state));
+            if let Some(paint) = cell.take() {
+                paint(&root.ctx().clone(), root);
+            }
         });
         let paint_jobs = ctx.tessellate(full.shapes, full.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
@@ -196,9 +225,7 @@ impl Gpu {
             }
         }
 
-        let Some(surface_tex) = acquire(&self.surface, &self.device, &self.config) else {
-            return action;
-        };
+        let surface_tex = acquire(&self.surface, &self.device, &self.config)?;
         let view = surface_tex
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -243,7 +270,7 @@ impl Gpu {
             self.egui_renderer.free_texture(id);
         }
 
-        action
+        Some(())
     }
 }
 
