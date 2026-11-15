@@ -142,7 +142,7 @@ pub fn draw(root: &mut egui::Ui, rt: &mut Runtime, ui_state: &mut UiState) -> Ac
         ui_state.pointer = (pos.x as f64, pos.y as f64);
     }
     if rt.windows_empty_hint() {
-        egui::Area::new(egui::Id::new("samlator-hint".to_owned()))
+        egui::Area::new(egui::Id::unique("samlator-hint"))
             .order(egui::Order::Background)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, clamp_hint_y(screen)))
             .show(&ctx, |ui| {

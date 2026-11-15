@@ -363,7 +363,7 @@ fn provision(paths: &Paths, config: &mut Config, tx: &Sender<Msg>) -> samlator_c
     if !config.manifest_url.is_empty() {
         let _ = tx.send(Msg::Stage(Stage::Manifest));
         if let Some(manifest) = fetch_manifest(&config.manifest_url, &paths.downloads()) {
-            match serde_json::from_str::<Config>(&manifest) {
+            match serde_json::from_str::<samlator_core::config::Manifest>(&manifest) {
                 Ok(m) => config.apply_manifest(&m),
                 Err(e) => {
                     let _ = tx.send(Msg::Detail(format!("manifest okunamadı: {e}")));

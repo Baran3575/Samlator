@@ -114,7 +114,7 @@ pub fn draw(ctx: &egui::Context, mods: &mut Modifiers, visible: &mut bool) -> Ve
     if !*visible {
         return out;
     }
-    egui::Area::new(egui::Id::new("samlator-keys".to_owned()))
+    egui::Area::new(egui::Id::unique("samlator-keys"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(0.0, -74.0))
         .show(ctx, |ui| {

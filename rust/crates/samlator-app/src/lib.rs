@@ -10,6 +10,7 @@
 pub mod boot;
 pub mod gpu;
 pub mod keyboard;
+mod pointer;
 pub mod runtime;
 #[cfg(feature = "safe-boot")]
 pub mod safe;
@@ -23,6 +24,8 @@ pub use android_entry::android_main;
 mod android_entry {
     use std::path::PathBuf;
     use std::time::Duration;
+
+    use crate::pointer;
 
     use android_activity::input::{Axis, KeyAction, MotionAction};
     use android_activity::input::InputEvent;
@@ -143,6 +146,7 @@ mod android_entry {
         }
 
         let mut ui_state = ui::UiState::default();
+        let mut pointer = pointer::Pointer::default();
         if let Some(previous) = boot::take_last_panic() {
             rt.push_log(format!("önceki çökme: {previous}"));
             ui_state.show_logs = true;
@@ -219,57 +223,81 @@ mod android_entry {
                         let handled = iter.next(|event| {
                             match event {
                                 InputEvent::MotionEvent(m) => {
-                                    let fingers = m.pointer_count();
-                                    let p = m.pointer_at_index(0);
-                                    let x = p.raw_x() / scale;
-                                    let y = p.raw_y() / scale;
-                                    ui_state.pointer = (x as f64, y as f64);
+                                    let fingers = m.pointer_count().max(1);
+                                    let first = m.pointer_at_index(0);
+                                    let (px, py) = (first.raw_x() as f64, first.raw_y() as f64);
+                                    let mut mid_y = 0.0;
+                                    for i in 0..fingers {
+                                        mid_y += m.pointer_at_index(i).raw_y() as f64;
+                                    }
+                                    mid_y /= fingers as f64;
+
+                                    let (tx, ty) = pointer.points(scale);
+                                    ui_state.pointer = (tx as f64, ty as f64);
+                                    // The on-screen keyboard covers the bottom half;
+                                    // touches there belong to egui, not the guest.
                                     let keyboard_band = ui_state.keyboard_visible
-                                        && y > (size.1 as f32 / scale) * 0.5;
+                                        && ty > (size.1 as f32 / scale) * 0.5;
+                                    let mut acted = Vec::new();
                                     match m.action() {
                                         MotionAction::Down => {
                                             events.push(egui::Event::PointerButton {
-                                                pos: egui::pos2(x, y),
+                                                pos: egui::pos2(tx, ty),
                                                 button: egui::PointerButton::Primary,
                                                 pressed: true,
                                                 modifiers: egui::Modifiers::default(),
                                             });
-                                            if !keyboard_band {
-                                                rt.pointer_motion(x as f64, y as f64);
-                                                rt.pointer_button(POINTER_BUTTON_LEFT, true);
+                                            if keyboard_band {
+                                                pointer.cancel();
+                                            } else if fingers >= 2 {
+                                                acted.extend(pointer.two_finger(mid_y));
+                                            } else {
+                                                acted.extend(pointer.down(px, py));
                                             }
                                         }
-                                        MotionAction::Up => {
+                                        MotionAction::Up | MotionAction::Cancel => {
                                             events.push(egui::Event::PointerButton {
-                                                pos: egui::pos2(x, y),
+                                                pos: egui::pos2(tx, ty),
                                                 button: egui::PointerButton::Primary,
                                                 pressed: false,
                                                 modifiers: egui::Modifiers::default(),
                                             });
-                                            if !keyboard_band {
-                                                rt.pointer_button(POINTER_BUTTON_LEFT, false);
-                                            }
+                                            acted.extend(pointer.up(px, py));
                                         }
                                         MotionAction::Move | MotionAction::HoverMove => {
-                                            events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
+                                            events.push(egui::Event::PointerMoved(egui::pos2(tx, ty)));
                                             if fingers >= 2 {
-                                                rt.scroll(-4.0);
+                                                acted.extend(pointer.two_finger(mid_y));
                                             } else if !keyboard_band {
-                                                rt.pointer_motion(x as f64, y as f64);
+                                                acted.extend(pointer.motion(px, py));
                                             }
                                         }
                                         MotionAction::Scroll => {
-                                            let delta = p.axis_value(Axis::Vscroll);
+                                            let delta = first.axis_value(Axis::Vscroll) as f64;
                                             events.push(egui::Event::MouseWheel {
                                                 unit: egui::MouseWheelUnit::Point,
-                                                delta: egui::vec2(0.0, delta),
+                                                delta: egui::vec2(0.0, delta as f32 * scale),
                                                 phase: egui::TouchPhase::Move,
                                                 source: egui::MouseWheelSource::Unknown,
                                                 modifiers: egui::Modifiers::default(),
                                             });
-                                            rt.scroll(delta as f64 * 40.0);
+                                            acted.push(pointer::Action::Scroll { dy: -delta * 20.0 });
                                         }
                                         _ => {}
+                                    }
+                                    for action in acted {
+                                        match action {
+                                            pointer::Action::Motion { x, y } => rt.pointer_motion(x, y),
+                                            pointer::Action::Button { pressed } => {
+                                                if keyboard_band {
+                                                    continue;
+                                                }
+                                                rt.pointer_button(POINTER_BUTTON_LEFT, pressed);
+                                            }
+                                            pointer::Action::Scroll { dy } => {
+                                                rt.scroll(dy / scale as f64 / 4.0)
+                                            }
+                                        }
                                     }
                                 }
                                 InputEvent::KeyEvent(k) => {

@@ -464,7 +464,7 @@ impl State {
     }
 }
 
-struct CopyResult {
+pub(crate) struct CopyResult {
     bytes: Vec<u8>,
     width: u32,
     height: u32,

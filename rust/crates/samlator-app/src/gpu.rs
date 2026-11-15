@@ -276,7 +276,7 @@ impl Gpu {
             let screen = root.max_rect().size();
             if let Some(id) = desktop {
                 let inner = root.ctx().clone();
-                egui::Area::new(egui::Id::new("samlator-desktop".to_owned()))
+                egui::Area::new(egui::Id::unique("samlator-desktop"))
                     .order(egui::Order::Background)
                     .fixed_pos(egui::Pos2::ZERO)
                     .show(&inner, |ui| {

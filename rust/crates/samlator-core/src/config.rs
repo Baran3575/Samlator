@@ -215,6 +215,21 @@ impl Default for Config {
     }
 }
 
+/// Release manifest published by CI (`rootfs-latest/manifest.json`).
+///
+/// Deliberately looser than [`Config`]: a manifest only has to say where the
+/// rootfs and helpers live, so unknown or missing fields never break an
+/// installed build.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Manifest {
+    #[serde(default)]
+    pub rootfs: Option<Payload>,
+    #[serde(default)]
+    pub payloads: Vec<Payload>,
+    #[serde(default)]
+    pub apps: Vec<AppEntry>,
+}
+
 impl Config {
     pub fn load_or_default(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
@@ -269,12 +284,19 @@ impl Config {
     }
 
     /// Merge a release manifest (same JSON shape) over the built-in defaults.
-    pub fn apply_manifest(&mut self, manifest: &Config) {
-        if !manifest.rootfs.url.is_empty() {
-            self.rootfs = manifest.rootfs.clone();
+    pub fn apply_manifest(&mut self, manifest: &Manifest) {
+        if let Some(rootfs) = manifest.rootfs.as_ref() {
+            if !rootfs.url.is_empty() {
+                self.rootfs = rootfs.clone();
+            }
         }
-        if !manifest.payloads.is_empty() {
-            self.payloads = manifest.payloads.clone();
+        // Payloads are merged by id so a manifest can add the proot helper
+        // without dropping the app entries baked into the binary.
+        for payload in manifest.payloads.iter() {
+            match self.payloads.iter_mut().find(|p| p.id == payload.id) {
+                Some(slot) => *slot = payload.clone(),
+                None => self.payloads.push(payload.clone()),
+            }
         }
         if !manifest.apps.is_empty() {
             self.apps = manifest.apps.clone();
@@ -285,6 +307,31 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_merges_rootfs_and_keeps_apps() {
+        let mut cfg = Config::default();
+        let json = r#"{
+            "rootfs": {"id":"rootfs","url":"https://x/rootfs.tar.zst","sha256":"ab",
+                       "kind":"rootfs","strip":0,"target":"rootfs"},
+            "payloads": [
+              {"id":"antigravity","url":"https://x/ag.tar.gz","sha256":"",
+               "kind":"app-tree","strip":1,"target":"rootfs/opt/antigravity"},
+              {"id":"proot","url":"https://x/proot-rs","sha256":"cd",
+               "kind":"helper","strip":0,"target":"bin"}
+            ]
+        }"#;
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        cfg.apply_manifest(&manifest);
+        assert_eq!(cfg.rootfs.sha256, "ab");
+        assert!(cfg.payloads.iter().any(|p| p.id == "proot"));
+        assert_eq!(
+            cfg.payloads.iter().filter(|p| p.id == "antigravity").count(),
+            1,
+            "existing payload must be replaced, not duplicated"
+        );
+        assert!(cfg.app("antigravity").is_some(), "app entries survive a manifest");
+    }
 
     #[test]
     fn roundtrip() {
