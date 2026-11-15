@@ -394,6 +394,9 @@ fn provision(paths: &Paths, config: &mut Config, tx: &Sender<Msg>) -> samlator_c
         rootfs::extract_tar_zst(&archive, &paths.rootfs(), rootfs_payload.strip, &mut notify)?;
         let _ = std::fs::remove_file(&archive);
     }
+    // proot mounts nothing, so /dev, /proc and DNS have to be real directories
+    // and files inside the tree before apt can run.
+    rootfs::prepare_guest(&paths.rootfs())?;
 
     // 3. App payloads (Antigravity arm64 tree).
     let _ = tx.send(Msg::Stage(Stage::Payloads));

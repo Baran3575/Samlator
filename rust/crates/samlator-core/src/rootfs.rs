@@ -37,6 +37,31 @@ pub fn is_rootfs_ready(rootfs: &Path) -> bool {
     rootfs.join("etc/debian_version").is_file() || rootfs.join("bin/sh").is_file()
 }
 
+/// Make an extracted tree usable under proot.
+///
+/// proot only remaps paths, it does not mount anything, so the directories the
+/// guest expects to exist must be there already and DNS has to be written by
+/// hand: without `/etc/resolv.conf` every `apt-get update` in the guest fails
+/// with "temporary failure resolving".
+pub fn prepare_guest(rootfs: &Path) -> Result<()> {
+    for dir in ["dev", "proc", "sys", "tmp", "run", "root", "opt", "var/tmp"] {
+        std::fs::create_dir_all(rootfs.join(dir))?;
+    }
+    let resolv = rootfs.join("etc/resolv.conf");
+    let empty = std::fs::metadata(&resolv).map(|m| m.len() == 0).unwrap_or(true);
+    if empty {
+        std::fs::create_dir_all(rootfs.join("etc"))?;
+        std::fs::write(&resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n")?;
+    }
+    // A stable machine-id keeps Chromium from regenerating its profile keys on
+    // every launch (which it treats as a fresh install).
+    let machine_id = rootfs.join("etc/machine-id");
+    if !machine_id.is_file() {
+        std::fs::write(&machine_id, "0123456789abcdef0123456789abcdef\n")?;
+    }
+    Ok(())
+}
+
 pub fn is_payload_ready(sys_root: &Path, target: &str) -> bool {
     let p = sys_root.join(target);
     p.exists()
@@ -157,7 +182,18 @@ export DEBIAN_FRONTEND=noninteractive
 echo "[samlator] configuring apt"
 apt-get update -o Acquire::Retries=3 || true
 echo "[samlator] installing desktop runtime"
-apt-get install -y --no-install-recommends {pkg} || true
+# One shot first: fast and exact on Debian. Ubuntu 24.04 renamed a pile of
+# libraries for the 64-bit time_t transition (libasound2 -> libasound2t64), so
+# fall back to a per-package pass that tries the new name before giving up.
+install_group() {{
+    apt-get install -y --no-install-recommends {pkg} && return 0
+    for p in {pkg}; do
+        apt-get install -y --no-install-recommends "$p" && continue
+        apt-get install -y --no-install-recommends "${{p}}t64" && continue
+        echo "[samlator] atlandı: $p"
+    done
+}}
+install_group
 mkdir -p /opt/antigravity /root/Desktop /root/.config
 # Wayland-only session: make sure no X11 path is picked by gui apps.
 printf 'export XDG_SESSION_TYPE=wayland\nexport MOZ_ENABLE_WAYLAND=1\n' > /root/.profile
@@ -227,6 +263,22 @@ mod tests {
         std::fs::create_dir_all(rootfs.join("etc")).unwrap();
         std::fs::write(rootfs.join("etc/debian_version"), "12.0").unwrap();
         assert!(is_rootfs_ready(&rootfs));
+    }
+
+    #[test]
+    fn prepare_guest_adds_mountpoints_and_dns() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        prepare_guest(root).unwrap();
+        assert!(root.join("dev").is_dir());
+        assert!(root.join("proc").is_dir());
+        let resolv = std::fs::read_to_string(root.join("etc/resolv.conf")).unwrap();
+        assert!(resolv.contains("nameserver 1.1.1.1"));
+        // A real resolv.conf provided by the image must not be overwritten.
+        std::fs::write(root.join("etc/resolv.conf"), "nameserver 9.9.9.9\n").unwrap();
+        prepare_guest(root).unwrap();
+        let kept = std::fs::read_to_string(root.join("etc/resolv.conf")).unwrap();
+        assert!(kept.contains("9.9.9.9"));
     }
 
     #[test]
