@@ -6,3 +6,5 @@ local.properties
 *.apk
 *.aab
 *.so
+build-dl/
+dist/
