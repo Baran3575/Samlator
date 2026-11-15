@@ -1,0 +1,86 @@
+name: android
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-linux-android
+          rustup component add clippy rustfmt || true
+          echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK + NDK
+        run: |
+          SDK="$ANDROID_SDK_ROOT"
+          if [ -z "$SDK" ]; then SDK="$ANDROID_HOME"; fi
+          if [ -z "$SDK" ]; then
+            SDK="$HOME/android-sdk"
+            mkdir -p "$SDK"
+            echo "sdk.dir=$SDK" > android/local.properties
+          fi
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" "platforms;android-35" "build-tools;35.0.0" \
+            "ndk;27.0.12077973" > /dev/null
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build deps (libxkbcommon)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends meson ninja-build \
+            libxkbcommon-dev libwayland-dev pkg-config x11-xkb-utils
+          scripts/build-xkbcommon.sh host
+          scripts/build-xkbcommon.sh android
+
+      - name: Unit tests
+        run: |
+          export PKG_CONFIG_PATH="$(pwd)/deps/host/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          export LD_LIBRARY_PATH="$(pwd)/deps/host/lib:${LD_LIBRARY_PATH:-}"
+          export RUSTFLAGS="-L native=$(pwd)/deps/host/lib"
+          cargo test --manifest-path rust/Cargo.toml -p samlator-core -p samlator-compositor -p samlator-app
+
+      - name: Build APK
+        run: scripts/build-apk.sh release
+
+      - name: Collect artifact
+        run: |
+          mkdir -p dist
+          find android/app/build/outputs/apk -name '*.apk' -exec cp {} dist/samlator.apk \;
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: samlator-apk
+          path: dist/samlator.apk
+          if-no-files-found: error
