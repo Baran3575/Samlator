@@ -17,6 +17,8 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 libc = "0.2"
+# Antigravity ships a .tar.gz; zstd covers our own payloads.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.14"

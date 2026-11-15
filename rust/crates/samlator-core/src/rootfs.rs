@@ -90,21 +90,55 @@ pub fn extract_tar_zst_bytes(bytes: &[u8], dest: &Path, strip: u32) -> Result<()
     result
 }
 
+/// Extract any of the archive formats our payloads use, picked by magic bytes
+/// rather than by file name: zstd (`rootfs.tar.zst`, `xkb.tar.zst`) and gzip
+/// (the Antigravity `.tar.gz` tarball).
+pub fn extract_archive(
+    archive: &Path,
+    dest: &Path,
+    strip: u32,
+    progress: ProgressFn<'_>,
+) -> Result<()> {
+    let file = File::open(archive)?;
+    let magic = archive_magic(archive)?;
+    let reader = BufReader::with_capacity(1 << 20, file);
+    match magic {
+        ZSTD_MAGIC => {
+            let decoder = zstd::stream::read::Decoder::new(reader)
+                .map_err(|e| Error::Archive(format!("zstd: {e}")))?;
+            extract_tar_reader(decoder, dest, strip, progress)
+        }
+        GZIP_MAGIC => extract_tar_reader(
+            flate2::read::GzDecoder::new(reader),
+            dest,
+            strip,
+            progress,
+        ),
+        _ => Err(Error::Archive(format!(
+            "bilinmeyen arsiv bicimi (ilk baytlar {:02x?})",
+            magic
+        ))),
+    }
+}
+
 pub fn extract_tar_zst(
     archive: &Path,
     dest: &Path,
     strip: u32,
     progress: ProgressFn<'_>,
 ) -> Result<()> {
+    extract_archive(archive, dest, strip, progress)
+}
+
+fn extract_tar_reader<R: std::io::Read>(
+    reader: R,
+    dest: &Path,
+    strip: u32,
+    progress: ProgressFn<'_>,
+) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     progress(Progress::Stage("extracting".into()));
-
-    let file = File::open(archive)?;
-    check_zstd_frame(archive)?;
-    let reader = BufReader::with_capacity(1 << 20, file);
-    let decoder = zstd::stream::read::Decoder::new(reader)
-        .map_err(|e| Error::Archive(format!("zstd: {e}")))?;
-    let mut tar = tar::Archive::new(decoder);
+    let mut tar = tar::Archive::new(reader);
     tar.set_overwrite(true);
     tar.set_preserve_permissions(true);
 
@@ -199,22 +233,21 @@ pub fn extract_tar_zst(
     Ok(())
 }
 
-/// Fail with a readable message instead of zstd's "Unknown frame descriptor"
-/// when the archive on disk is not a zstd stream at all (truncated download,
-/// HTML error page, or a stale `.part` file).
-fn check_zstd_frame(path: &Path) -> Result<()> {
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+const GZIP_MAGIC: [u8; 4] = [0x1F, 0x8B, 0x08, 0x00];
+
+/// First four bytes of a file, used to pick a decompressor. A truncated
+/// download or an HTML error page shows up here as an unknown magic instead of
+/// a confusing decoder error deep inside the extraction.
+fn archive_magic(path: &Path) -> Result<[u8; 4]> {
     use std::io::Read;
     let mut head = [0u8; 4];
     let mut f = File::open(path)?;
-    let n = f.read(&mut head)?;
-    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    if n < 4 || head != [0x28, 0xB5, 0x2F, 0xFD] {
-        return Err(Error::Archive(format!(
-            "arsiv zstd degil ({size} bayt, ilk baytlar {:02x?})",
-            &head[..n]
-        )));
-    }
-    Ok(())
+    f.read_exact(&mut head).map_err(|_| {
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        Error::Archive(format!("arsiv cok kucuk ({size} bayt)"))
+    })?;
+    Ok(head)
 }
 
 fn strip_components(path: &Path, strip: u32) -> Option<PathBuf> {
@@ -341,6 +374,34 @@ mod tests {
         }
         prepare_guest(&dest).unwrap();
         assert!(is_rootfs_ready(&dest));
+    }
+
+    /// The Antigravity tarball is `.tar.gz`; magic sniffing has to pick gzip.
+    #[test]
+    fn extracts_gzip_tarballs() {
+        use flate2::write::GzEncoder;
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("app.tar.gz");
+
+        // Build the plain tar first, then gzip it.
+        let mut tar_bytes = Vec::new();
+        {
+            let mut tar = tar::Builder::new(&mut tar_bytes);
+            let mut h = tar::Header::new_gnu();
+            h.set_size(4);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, "Antigravity IDE/resources/app.bin", &b"data"[..])
+                .unwrap();
+            tar.finish().unwrap();
+        }
+        let mut enc = GzEncoder::new(File::create(&archive).unwrap(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut enc, &tar_bytes).unwrap();
+        enc.finish().unwrap();
+
+        let dest = dir.path().join("out");
+        extract_archive(&archive, &dest, 1, &mut |_| {}).unwrap();
+        assert!(dest.join("resources/app.bin").is_file());
     }
 
     #[test]

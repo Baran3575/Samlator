@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use samlator_compositor::{Command, Compositor, DisplayConfig};
-use samlator_core::config::{Config, PayloadKind};
+use samlator_core::config::{Config, Payload, PayloadKind};
 use samlator_core::paths::Paths;
 use samlator_core::proot::{ProotSpec, BOOTSTRAP_PACKAGES};
 use samlator_core::rootfs::{self, InstalledMarkers};
@@ -421,31 +421,25 @@ fn provision(paths: &Paths, config: &mut Config, tx: &Sender<Msg>) -> samlator_c
     // and files inside the tree before apt can run.
     rootfs::prepare_guest(&paths.rootfs())?;
 
-    // 3. App payloads (Antigravity arm64 tree).
-    let _ = tx.send(Msg::Stage(Stage::Payloads));
-    for payload in config.payloads.clone() {
-        let target = paths.base().join("sys").join(&payload.target);
-        if payload.kind == PayloadKind::AppTree && target.exists() {
-            continue;
-        }
-        let file = paths
-            .downloads()
-            .join(format!("{}.tar.zst", payload.id));
-        download::fetch(&payload.url, &file, &payload.sha256, &payload.id, &mut notify)?;
-        rootfs::extract_tar_zst(&file, &target, payload.strip, &mut notify)?;
-        let _ = std::fs::remove_file(&file);
-    }
-
-    // 4. proot-rs helper binary.
+    // 3. Helper binaries (proot-rs). Nothing can run in the guest without
+    // them, so they come before the heavy apt step.
     let _ = tx.send(Msg::Stage(Stage::Proot));
-    if !paths.proot().is_file() {
-        if let Some(helper) = config.payloads.iter().find(|p| p.kind == PayloadKind::Helper).cloned() {
-            let file = paths.downloads().join("proot-rs");
-            download::fetch(&helper.url, &file, &helper.sha256, "proot", &mut notify)?;
-            std::fs::copy(&file, paths.proot())?;
-            make_executable(&paths.proot())?;
-            let _ = std::fs::remove_file(&file);
+    for payload in config
+        .payloads
+        .clone()
+        .into_iter()
+        .filter(|p| p.kind == PayloadKind::Helper)
+    {
+        let _ = tx.send(Msg::Detail(format!("{} indiriliyor", payload.id)));
+        if let Err(e) = install_helper(paths, &payload, &mut notify) {
+            let _ = tx.send(Msg::Error(format!("{} kurulamadı: {e}", payload.id)));
+            return Err(e);
         }
+    }
+    if !paths.proot().is_file() {
+        let msg = "proot-rs bulunamadı: manifest yardımcı ikili içermiyor".to_string();
+        let _ = tx.send(Msg::Error(msg.clone()));
+        return Err(samlator_core::Error::Config(msg));
     }
 
     // 5. First-boot provisioning inside the guest (apt, fonts, dbus).
@@ -494,7 +488,69 @@ fn provision(paths: &Paths, config: &mut Config, tx: &Sender<Msg>) -> samlator_c
     }
 
     let _ = tx.send(Msg::Stage(Stage::Ready));
+    // 6. App trees (Antigravity, ~228 MB) last: the desktop is already usable
+    // without them and a failure here must not undo a finished setup.
+    for payload in config
+        .payloads
+        .clone()
+        .into_iter()
+        .filter(|p| p.kind == PayloadKind::AppTree)
+    {
+        let target = paths.base().join("sys").join(&payload.target);
+        if target.exists() {
+            continue;
+        }
+        let _ = tx.send(Msg::Stage(Stage::Payloads));
+        let _ = tx.send(Msg::Detail(format!("{} indiriliyor", payload.id)));
+        let name = download_name(&payload);
+        let file = paths.downloads().join(&name);
+        let result = download::fetch(&payload.url, &file, &payload.sha256, &payload.id, &mut notify)
+            .and_then(|_| rootfs::extract_archive(&file, &target, payload.strip, &mut notify));
+        let _ = std::fs::remove_file(&file);
+        match result {
+            Ok(()) => {
+                let _ = tx.send(Msg::Detail(format!("{} kuruldu", payload.id)));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&target);
+                let _ = tx.send(Msg::Detail(format!("{} indirilemedi: {e}", payload.id)));
+            }
+        }
+    }
+
     let _ = tx.send(Msg::Detail("kurulum tamam".into()));
+    Ok(())
+}
+
+/// File name a payload is downloaded to, taken from its URL.
+fn download_name(payload: &Payload) -> String {
+    payload
+        .url
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty())
+        .map(|n| n.replace("%20", " "))
+        .unwrap_or_else(|| payload.id.clone())
+}
+
+/// Helper payloads are bare executables (proot-rs), never archives.
+fn install_helper(
+    paths: &Paths,
+    payload: &Payload,
+    notify: &mut impl FnMut(Progress),
+) -> samlator_core::Result<()> {
+    let target_dir = paths.base().join("sys").join(&payload.target);
+    std::fs::create_dir_all(&target_dir)?;
+    let file = paths.downloads().join(download_name(payload));
+    download::fetch(&payload.url, &file, &payload.sha256, &payload.id, notify)?;
+    let dest = if payload.id == "proot" || payload.target == "bin" {
+        paths.proot()
+    } else {
+        target_dir.join(download_name(payload))
+    };
+    std::fs::copy(&file, &dest)?;
+    make_executable(&dest)?;
+    let _ = std::fs::remove_file(&file);
     Ok(())
 }
 
