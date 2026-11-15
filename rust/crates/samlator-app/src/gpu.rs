@@ -17,6 +17,30 @@ const WALLPAPER: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// Android needs a display handle before wgpu will hand out a surface.
+///
+/// The platform's "display" is just the `ANativeWindow`; nothing in the Vulkan
+/// path reads it, but `create_surface` refuses to run without one.
+#[cfg(target_os = "android")]
+pub fn android_display() -> Box<dyn wgpu::wgt::WgpuHasDisplayHandle> {
+    #[derive(Debug)]
+    struct AndroidDisplay;
+
+    impl wgpu::rwh::HasDisplayHandle for AndroidDisplay {
+        fn display_handle(
+            &self,
+        ) -> Result<wgpu::rwh::DisplayHandle<'_>, wgpu::rwh::HandleError> {
+            Ok(unsafe {
+                wgpu::rwh::DisplayHandle::borrow_raw(wgpu::rwh::RawDisplayHandle::Android(
+                    wgpu::rwh::AndroidDisplayHandle::new(),
+                ))
+            })
+        }
+    }
+
+    Box::new(AndroidDisplay)
+}
+
 pub struct Gpu {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -43,6 +67,10 @@ impl Gpu {
     ) -> Result<Self, String> {
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
         instance_desc.backends = wgpu::Backends::all();
+        #[cfg(target_os = "android")]
+        {
+            instance_desc.display = Some(android_display());
+        }
         let instance = wgpu::Instance::new(instance_desc);
 
         let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
