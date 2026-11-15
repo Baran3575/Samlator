@@ -7,6 +7,7 @@
 //! `samlator-core` holds provisioning/supervision, `samlator-compositor` the
 //! desktop engine; this crate is the Android front end.
 
+pub mod boot;
 pub mod gpu;
 pub mod keyboard;
 pub mod runtime;
@@ -25,6 +26,7 @@ mod android_entry {
     use android_activity::input::InputEvent;
     use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 
+    use crate::boot;
     use crate::gpu::Gpu;
     use crate::keyboard::KeyRequest;
     use crate::runtime::Runtime;
@@ -63,26 +65,35 @@ mod android_entry {
     #[no_mangle]
     pub fn android_main(app: AndroidApp) {
         samlator_core::init_logging("Samlator");
+        boot::install_panic_hook();
 
         let base = app
             .internal_data_path()
             .unwrap_or_else(|| PathBuf::from("/data/local/tmp/samlator"));
+        // The panic hook runs before the app has a `Paths`, so publish it first.
+        std::env::set_var("SAMLATOR_HOME", &base);
+        boot::note_path_buf(&base, "android_main: start");
+
         let paths = Paths::resolve(Some(&base));
+        boot::note(&paths, format!("data dir: {}", paths.base().display()));
         let config = Config::load_or_default(&paths.config_file());
+        boot::note(&paths, "config loaded");
         let mut rt = Runtime::new(paths, config);
+        boot::note(&rt.paths, "runtime ready");
         rt.push_log(format!("Samlator {} başladı", env!("CARGO_PKG_VERSION")));
         rt.push_log(format!("veri dizini: {}", rt.paths.base().display()));
-
-        // First run provisions automatically: "apk kurunca masaüstü açılsın".
-        if !rt.is_ready() {
-            rt.start_setup();
-        }
-
         let mut ui_state = ui::UiState::default();
+        if let Some(previous) = boot::take_last_panic() {
+            rt.push_log(format!("önceki çökme: {previous}"));
+            ui_state.show_logs = true;
+        }
         let mut gpu: Option<Gpu> = None;
-        let mut size = (1080u32, 2340u32);
+        // Landscape by default; real values arrive with InitWindow.
+        let mut size = (2340u32, 1080u32);
         let mut scale = 2.625f32;
         let mut quit = false;
+        let mut setup_started = false;
+        let mut gpu_error: Option<String> = None;
 
         while !quit {
             let mut need_redraw = false;
@@ -103,8 +114,10 @@ mod android_entry {
                 let h = window.height().max(1) as u32;
                 if (w, h) != size {
                     size = (w, h);
-                    // 411dp is the S24 FE's logical width; keeps the UI readable.
-                    scale = (w as f32 / 411.0).max(1.0);
+                    // Scale from the short edge so the UI looks the same in both
+                    // orientations (411dp is the S24 FE's logical short side).
+                    scale = (w.min(h) as f32 / 411.0).max(1.0);
+                    boot::note(&rt.paths, format!("surface {w}x{h} @ scale {scale:.3}"));
                     if let Some(g) = gpu.as_mut() {
                         g.resize(w, h);
                     }
@@ -112,11 +125,27 @@ mod android_entry {
                         c.set_display(w, h, scale as f64);
                     }
                 }
-                if gpu.is_none() {
+                if gpu.is_none() && gpu_error.is_none() {
                     let target = wgpu::SurfaceTarget::from_window_without_display(window.clone());
-                    gpu = Gpu::new(target, size.0, size.1);
-                    if gpu.is_none() {
-                        rt.push_log("GPU yüzeyi oluşturulamadı".into());
+                    let (w0, h0) = size;
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        Gpu::new(target, w0, h0)
+                    })) {
+                        Ok(Some(g)) => {
+                            boot::note(&rt.paths, "gpu ready");
+                            gpu = Some(g);
+                        }
+                        Ok(None) => {
+                            boot::note(&rt.paths, "gpu init returned nothing");
+                            gpu_error = Some("GPU yüzeyi oluşturulamadı".into());
+                            rt.push_log("GPU yüzeyi oluşturulamadı".into());
+                        }
+                        Err(panic) => {
+                            let why = boot::describe_panic(&panic);
+                            boot::note(&rt.paths, format!("gpu panic: {why}"));
+                            gpu_error = Some(format!("GPU hatası: {why}"));
+                            rt.push_log(format!("GPU hatası: {why}"));
+                        }
                     }
                 }
             }
@@ -234,6 +263,13 @@ mod android_entry {
                         rt.key(code, false);
                     }
 
+                    // Provision only once the desktop is visibly running, so a
+                    // download problem can never keep the window from appearing.
+                    if !setup_started && gpu.is_some() && !rt.is_ready() {
+                        setup_started = true;
+                        rt.start_setup();
+                    }
+
                     match action {
                         Action::Setup => rt.start_setup(),
                         Action::Launch(id) => rt.launch(&id),
@@ -253,8 +289,8 @@ mod android_entry {
             }
         }
 
+        boot::note(&rt.paths, "android_main: exit");
         rt.stop_session();
-        rt.push_log("görünüm kapatıldı".into());
     }
 
     fn frame_changed(rt: &Runtime) -> bool {

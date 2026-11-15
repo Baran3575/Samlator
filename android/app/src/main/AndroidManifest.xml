@@ -4,8 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400003" android:required="false" />
-    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+        <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
         android:label="@string/app_name"
@@ -18,8 +17,8 @@
             android:name="android.app.NativeActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="portrait"
-            android:resizeableActivity="false"
+            android:screenOrientation="sensorLandscape"
+            android:resizeableActivity="true"
             android:configChanges="orientation|keyboardHidden|keyboard|navigation|screenLayout|screenSize|smallestScreenSize|density|uiMode|fontScale"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
             <meta-data android:name="android.app.lib_name" android:value="samlator_app" />

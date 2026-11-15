@@ -56,7 +56,7 @@ pub struct DisplayConfig {
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self { width: 1080, height: 2340, scale: 2.625, refresh_hz: 60 }
+        Self { width: 2340, height: 1080, scale: 2.625, refresh_hz: 60 }
     }
 }
 

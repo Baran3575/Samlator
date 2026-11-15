@@ -28,6 +28,8 @@ pub struct Gpu {
     desktop: Option<egui::TextureHandle>,
     desktop_size: (u32, u32),
     last_seq: u64,
+    /// Largest texture the adapter accepts; egui must be told the same number.
+    max_side: usize,
     pub size: (u32, u32),
 }
 
@@ -50,11 +52,15 @@ impl Gpu {
         }))
         .ok()?;
 
+        // `downlevel_defaults()` caps textures at 2048px, which is smaller than
+        // a 2340x1080 phone surface — asking for it panics during configure.
+        let max_dim = adapter.limits().max_texture_dimension_2d.max(1);
+        let limits = adapter.limits();
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("samlator"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                required_limits: limits,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
@@ -68,12 +74,15 @@ impl Gpu {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(caps.formats[0]);
+        // Never configure a surface the adapter cannot back.
+        let width = width.clamp(1, max_dim);
+        let height = height.clamp(1, max_dim);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             color_space: wgpu::SurfaceColorSpace::Auto,
-            width: width.max(1),
-            height: height.max(1),
+            width,
+            height,
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
@@ -104,6 +113,7 @@ impl Gpu {
             desktop: None,
             desktop_size: (0, 0),
             last_seq: 0,
+            max_side: max_dim as usize,
             size: (width.max(1), height.max(1)),
         })
     }
@@ -152,9 +162,11 @@ impl Gpu {
         &mut self,
         rt: &mut Runtime,
         ui_state: &mut UiState,
-        raw_input: egui::RawInput,
+        mut raw_input: egui::RawInput,
     ) -> Option<Action> {
         let mut action = None;
+        // Without this egui refuses to allocate the full-screen desktop texture.
+        raw_input.max_texture_side = Some(self.max_side);
         let ctx = self.egui_ctx.clone();
         let desktop = self.desktop.as_ref().map(|h| h.id());
 
