@@ -26,12 +26,23 @@ android {
         }
     }
 
+    // A stable key checked into the repo: sideloaded APKs must keep the same
+    // signature or Android refuses to install over the previous build and the
+    // user has to uninstall every update. It is not a secret worth keeping,
+    // the app is never published to Play.
+    signingConfigs {
+        stable {
+            storeFile file('../keystore/samlator.jks')
+            storePassword 'samlator'
+            keyAlias 'samlator'
+            keyPassword 'samlator'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            // Sideloading needs a signature; the debug key is enough for that
-            // and keeps the repository free of secrets.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.stable
         }
     }
 
