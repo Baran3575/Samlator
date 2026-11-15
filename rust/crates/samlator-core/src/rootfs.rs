@@ -32,9 +32,14 @@ impl InstalledMarkers {
     }
 }
 
-/// A Debian rootfs is "usable" once dpkg's release stamp exists.
+/// Written only after a *complete* extraction and guest preparation.
+pub const ROOTFS_MARKER: &str = ".samlator-rootfs-ok";
+
+/// A rootfs is usable once it was fully extracted. The marker matters: a
+/// half-extracted tree still has `bin/sh`, and treating that as ready made the
+/// app skip the retry and fail later with confusing errors.
 pub fn is_rootfs_ready(rootfs: &Path) -> bool {
-    rootfs.join("etc/debian_version").is_file() || rootfs.join("bin/sh").is_file()
+    rootfs.join(ROOTFS_MARKER).is_file() && rootfs.join("bin/sh").is_file()
 }
 
 /// Make an extracted tree usable under proot.
@@ -59,6 +64,7 @@ pub fn prepare_guest(rootfs: &Path) -> Result<()> {
     if !machine_id.is_file() {
         std::fs::write(&machine_id, "0123456789abcdef0123456789abcdef\n")?;
     }
+    std::fs::write(rootfs.join(ROOTFS_MARKER), "1\n")?;
     Ok(())
 }
 
@@ -94,6 +100,7 @@ pub fn extract_tar_zst(
     progress(Progress::Stage("extracting".into()));
 
     let file = File::open(archive)?;
+    check_zstd_frame(archive)?;
     let reader = BufReader::with_capacity(1 << 20, file);
     let decoder = zstd::stream::read::Decoder::new(reader)
         .map_err(|e| Error::Archive(format!("zstd: {e}")))?;
@@ -106,6 +113,7 @@ pub fn extract_tar_zst(
         .map_err(|e| Error::Archive(format!("tar: {e}")))?;
 
     let mut count: u64 = 0;
+    let mut pending: Vec<(PathBuf, PathBuf, PathBuf)> = Vec::new();
     for entry in entries {
         let mut entry = entry.map_err(|e| Error::Archive(format!("entry: {e}")))?;
         let path = entry
@@ -134,19 +142,78 @@ pub fn extract_tar_zst(
             std::fs::create_dir_all(parent)?;
         }
 
-        // `unpack` handles dirs, files, symlinks and hardlinks correctly.
+        // Hard links are the one entry type tar cannot resolve on its own here:
+        // the target may live anywhere in the tree and may not have been
+        // written yet (Ubuntu's perl ships `usr/bin/perl -> perl5.38.2` long
+        // before the real file). Collect them and link once the tree exists.
+        if etype.is_hard_link() {
+            if let Ok(Some(target)) = entry.link_name() {
+                let target_rel = strip_components(&target, strip).unwrap_or_else(|| target.into_owned());
+                pending.push((out, dest.join(target_rel), rel.clone()));
+            }
+            continue;
+        }
+
+        // `unpack` handles dirs, files and symlinks correctly.
         entry
             .unpack(&out)
             .map_err(|e| Error::Archive(format!("unpack {}: {e}", rel.display())))?;
 
         count += 1;
-        if count % 512 == 0 {
+        if count % 128 == 0 {
             progress(Progress::Bytes { done: count, total: None });
+        }
+    }
+
+    // Second pass: hard links, retried so chains (a -> b -> c) resolve no
+    // matter which order the archive listed them in.
+    let mut unresolved = pending;
+    for _ in 0..4 {
+        let before = unresolved.len();
+        let mut still = Vec::new();
+        for (link, target, rel) in unresolved {
+            match std::fs::hard_link(&target, &link) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => still.push((link, target, rel)),
+            }
+        }
+        unresolved = still;
+        if unresolved.is_empty() || unresolved.len() == before {
+            break;
+        }
+    }
+    if !unresolved.is_empty() {
+        // A missing link target is not fatal: fall back to a copy so the tree
+        // still works, and say which entry it was.
+        for (link, target, rel) in unresolved {
+            match std::fs::copy(&target, &link) {
+                Ok(_) => tracing::warn!("hard link {} replaced by a copy", rel.display()),
+                Err(e) => tracing::warn!("hard link {} dropped: {e}", rel.display()),
+            }
         }
     }
 
     progress(Progress::Done);
     tracing::info!("extracted {count} entries into {}", dest.display());
+    Ok(())
+}
+
+/// Fail with a readable message instead of zstd's "Unknown frame descriptor"
+/// when the archive on disk is not a zstd stream at all (truncated download,
+/// HTML error page, or a stale `.part` file).
+fn check_zstd_frame(path: &Path) -> Result<()> {
+    use std::io::Read;
+    let mut head = [0u8; 4];
+    let mut f = File::open(path)?;
+    let n = f.read(&mut head)?;
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if n < 4 || head != [0x28, 0xB5, 0x2F, 0xFD] {
+        return Err(Error::Archive(format!(
+            "arsiv zstd degil ({size} bayt, ilk baytlar {:02x?})",
+            &head[..n]
+        )));
+    }
     Ok(())
 }
 
@@ -230,10 +297,60 @@ mod tests {
         h.set_cksum();
         tar.append_link(&mut h, "top/link.txt", "hello.txt").unwrap();
 
+        // Ubuntu lists `usr/bin/perl -> perl5.38.2` *before* the real file, so
+        // the extractor has to defer hard links.
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(tar::EntryType::Link);
+        h.set_size(0);
+        h.set_mode(0o755);
+        h.set_cksum();
+        tar.append_link(&mut h, "top/perl", "top/perl5.38.2").unwrap();
+
+        let mut header = tar::Header::new_gnu();
+        header.set_size(9);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(&mut header, "top/perl5.38.2", &b"perl body"[..])
+            .unwrap();
+
         let enc = tar.into_inner().unwrap();
         let mut file = enc.finish().unwrap();
         file.flush().unwrap();
         archive
+    }
+
+    /// Real Ubuntu arm64 base tarball: slow and network bound, so opt in.
+    #[test]
+    #[ignore]
+    fn real_rootfs_extracts() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("rootfs.tar.zst");
+        let url = "https://github.com/Baran3575/Samlator/releases/download/rootfs-latest/rootfs.tar.zst";
+        crate::download::fetch(url, &archive, "", "rootfs", &mut |_| {}).unwrap();
+        let dest = dir.path().join("rootfs");
+        let mut seen = 0usize;
+        extract_tar_zst(&archive, &dest, 0, &mut |p| {
+            if matches!(p, Progress::Bytes { .. }) {
+                seen += 1;
+            }
+        })
+        .unwrap();
+        assert!(seen > 0, "progress must be reported while extracting");
+        for f in ["bin/sh", "usr/bin/perl", "etc/os-release", "usr/bin/apt-get"] {
+            assert!(dest.join(f).exists(), "missing {f} after extraction");
+        }
+        prepare_guest(&dest).unwrap();
+        assert!(is_rootfs_ready(&dest));
+    }
+
+    #[test]
+    fn hard_links_listed_before_their_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = make_archive(dir.path());
+        let dest = dir.path().join("out");
+        extract_tar_zst(&archive, &dest, 1, &mut |_| {}).unwrap();
+        let body = std::fs::read(dest.join("perl")).expect("hard link must exist");
+        assert_eq!(body, b"perl body");
     }
 
     #[test]
@@ -258,10 +375,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(rootfs.join("bin")).unwrap();
-        assert!(!is_rootfs_ready(&rootfs));
-        std::fs::write(rootfs.join("etc/debian_version").as_path(), "12.0").ok();
-        std::fs::create_dir_all(rootfs.join("etc")).unwrap();
-        std::fs::write(rootfs.join("etc/debian_version"), "12.0").unwrap();
+        std::fs::write(rootfs.join("bin/sh"), "#!").unwrap();
+        assert!(!is_rootfs_ready(&rootfs), "bin/sh alone is a half-extracted tree");
+        std::fs::write(rootfs.join(ROOTFS_MARKER), "1").unwrap();
         assert!(is_rootfs_ready(&rootfs));
     }
 

@@ -205,6 +205,11 @@ impl Runtime {
                             done / 1_048_576,
                             total / 1_048_576
                         );
+                    } else if done > 0 {
+                        // Extraction reports entries without a total; without
+                        // this line the bar sits still and the install looks
+                        // hung.
+                        self.detail = format!("{done} öğe açıldı");
                     }
                 }
                 Msg::Error(e) => {
@@ -391,7 +396,25 @@ fn provision(paths: &Paths, config: &mut Config, tx: &Sender<Msg>) -> samlator_c
             "rootfs",
             &mut notify,
         )?;
-        rootfs::extract_tar_zst(&archive, &paths.rootfs(), rootfs_payload.strip, &mut notify)?;
+        // A truncated download is the usual cause of "Unknown frame
+        // descriptor", so verify before touching the tree.
+        if !rootfs_payload.sha256.is_empty() {
+            let got = download::sha256_file(&archive)?;
+            if !got.eq_ignore_ascii_case(rootfs_payload.sha256.trim()) {
+                let _ = std::fs::remove_file(&archive);
+                return Err(samlator_core::Error::Checksum {
+                    what: "rootfs".into(),
+                    expected: rootfs_payload.sha256.clone(),
+                    actual: got,
+                });
+            }
+        }
+        if let Err(e) = rootfs::extract_tar_zst(&archive, &paths.rootfs(), rootfs_payload.strip, &mut notify) {
+            // Never leave a half-extracted tree behind: it looks installed.
+            let _ = std::fs::remove_dir_all(paths.rootfs());
+            let _ = std::fs::remove_file(&archive);
+            return Err(e);
+        }
         let _ = std::fs::remove_file(&archive);
     }
     // proot mounts nothing, so /dev, /proc and DNS have to be real directories
