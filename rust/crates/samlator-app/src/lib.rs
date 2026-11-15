@@ -176,14 +176,14 @@ mod android_entry {
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         Gpu::new(target, w0, h0)
                     })) {
-                        Ok(Some(g)) => {
+                        Ok(Ok(g)) => {
                             boot::note(&rt.paths, "gpu ready");
                             gpu = Some(g);
                         }
-                        Ok(None) => {
-                            boot::note(&rt.paths, "gpu init returned nothing");
-                            gpu_error = Some("GPU yüzeyi oluşturulamadı".into());
-                            rt.push_log("GPU yüzeyi oluşturulamadı".into());
+                        Ok(Err(why)) => {
+                            boot::note(&rt.paths, format!("gpu failed: {why}"));
+                            rt.push_log(format!("GPU yok: {why}"));
+                            gpu_error = Some(why);
                         }
                         Err(panic) => {
                             let why = boot::describe_panic(&panic);

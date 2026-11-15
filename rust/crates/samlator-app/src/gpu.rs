@@ -34,15 +34,30 @@ pub struct Gpu {
 }
 
 impl Gpu {
+    /// Returns a human readable reason instead of a bare `None`: on a phone the
+    /// only way to learn why the GPU path failed is to log it.
     pub fn new(
         window: impl Into<wgpu::SurfaceTarget<'static>>,
         width: u32,
         height: u32,
-    ) -> Option<Self> {
+    ) -> Result<Self, String> {
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        instance_desc.backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
+        instance_desc.backends = wgpu::Backends::all();
         let instance = wgpu::Instance::new(instance_desc);
-        let surface = instance.create_surface(window).ok()?;
+
+        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+        let found: Vec<String> = adapters
+            .iter()
+            .map(|a| {
+                let i = a.get_info();
+                format!("{:?}/{}", i.backend, i.name)
+            })
+            .collect();
+        log::info!("wgpu adapters without surface: {found:?}");
+
+        let surface = instance
+            .create_surface(window)
+            .map_err(|e| format!("create_surface: {e}"))?;
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -50,7 +65,9 @@ impl Gpu {
             force_fallback_adapter: false,
             apply_limit_buckets: false,
         }))
-        .ok()?;
+        .map_err(|e| format!("request_adapter: {e} (adapters: {found:?})"))?;
+        let info = adapter.get_info();
+        log::info!("wgpu adapter: {info:?}");
 
         // `downlevel_defaults()` caps textures at 2048px, which is smaller than
         // a 2340x1080 phone surface — asking for it panics during configure.
@@ -65,9 +82,10 @@ impl Gpu {
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             }))
-            .ok()?;
+            .map_err(|e| format!("request_device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
+        log::info!("surface formats: {:?}", caps.formats);
         let format = caps
             .formats
             .iter()
@@ -103,7 +121,7 @@ impl Gpu {
             },
         );
 
-        Some(Self {
+        Ok(Self {
             surface,
             device,
             queue,

@@ -25,6 +25,7 @@ pub fn run(app: AndroidApp) {
     let mut size = (2340u32, 1080u32);
     let mut note = String::from("safe-boot: ekran hazır");
     let mut quit = false;
+    let mut tried_gpu = false;
 
     while !quit {
         let mut redraw = false;
@@ -46,19 +47,20 @@ pub fn run(app: AndroidApp) {
                 }
                 boot::note_path_buf(&base, &format!("safe-boot: surface {w}x{h}"));
             }
-            if gpu.is_none() {
+            if gpu.is_none() && !tried_gpu {
+                tried_gpu = true;
                 let target = wgpu::SurfaceTarget::from_window_without_display(window.clone());
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     Gpu::new(target, size.0, size.1)
                 })) {
-                    Ok(Some(g)) => {
+                    Ok(Ok(g)) => {
                         gpu = Some(g);
                         note = format!("safe-boot: GPU hazır ({w}x{h})");
                         boot::note_path_buf(&base, "safe-boot: gpu ready");
                     }
-                    Ok(None) => {
-                        note = "safe-boot: GPU yüzeyi yok".into();
-                        boot::note_path_buf(&base, "safe-boot: gpu returned nothing");
+                    Ok(Err(why)) => {
+                        note = format!("GPU yok: {why}");
+                        boot::note_path_buf(&base, &format!("safe-boot: gpu failed: {why}"));
                     }
                     Err(p) => {
                         let why = boot::describe_panic(&p);
