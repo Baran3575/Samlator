@@ -66,6 +66,18 @@ fn append(path: std::path::PathBuf, line: &str) {
     }
 }
 
+/// Write the very first marker with nothing but `std`.
+///
+/// If even this never shows up, the process died before our code ran and the
+/// problem is the native entry or library loading, not the desktop stack.
+pub fn mark_raw(base: &std::path::Path, msg: &str) {
+    let line = format!("{msg}\n");
+    append(base.join("sys").join("logs").join("first.log"), &line);
+    for p in shared_logs() {
+        append(p, &line);
+    }
+}
+
 /// Append one line using an already-known data dir (startup path only).
 pub fn note_path_buf(base: &std::path::Path, msg: &str) {
     log::info!("{msg}");

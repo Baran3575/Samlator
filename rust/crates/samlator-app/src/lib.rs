@@ -71,8 +71,16 @@ mod android_entry {
     /// impossible to diagnose on a phone without `adb`.
     #[no_mangle]
     pub fn android_main(app: AndroidApp) {
+        // Deliberately first and dependency-free: this is the proof that the
+        // native entry point ran at all.
+        let early_base = app
+            .internal_data_path()
+            .unwrap_or_else(|| PathBuf::from("/data/local/tmp/samlator"));
+        boot::mark_raw(&early_base, "MARK android_main entered");
+
         samlator_core::init_logging("Samlator");
         boot::install_panic_hook();
+        boot::mark_raw(&early_base, "MARK logging ready");
 
         let guardian = app.clone();
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(app))) {
