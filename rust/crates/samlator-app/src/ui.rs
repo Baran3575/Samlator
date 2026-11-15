@@ -335,11 +335,13 @@ mod tests {
             )),
             ..Default::default()
         };
-        let out = ctx.run_ui(input, |root| {
+        let mut out = ctx.run_ui(input, |root| {
             let action = draw(root, &mut rt, &mut state);
             assert_eq!(action, Action::None);
         });
         assert!(!out.shapes.is_empty(), "expected the UI to paint something");
+        // Unsent texture deltas are a bug in production, so the test retires them.
+        out.textures_delta.clear();
     }
 
     #[test]

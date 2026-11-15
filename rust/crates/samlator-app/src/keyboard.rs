@@ -31,8 +31,20 @@ pub mod evdev {
 /// evdev code for a printable ASCII character, if any.
 pub fn code_for_char(c: char) -> Option<u32> {
     let c = c.to_ascii_lowercase();
+    // evdev codes follow the physical QWERTY rows, not the alphabet.
+    const ROW1: [char; 10] = ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'];
+    const ROW2: [char; 9] = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
+    const ROW3: [char; 7] = ['z', 'x', 'c', 'v', 'b', 'n', 'm'];
+    if let Some(i) = ROW1.iter().position(|&k| k == c) {
+        return Some(16 + i as u32);
+    }
+    if let Some(i) = ROW2.iter().position(|&k| k == c) {
+        return Some(30 + i as u32);
+    }
+    if let Some(i) = ROW3.iter().position(|&k| k == c) {
+        return Some(44 + i as u32);
+    }
     let code = match c {
-        'a'..='z' => 30 + (c as u32 - 'a' as u32),
         '1'..='9' => 2 + (c as u32 - '1' as u32),
         '0' => 11,
         '-' => 12,
