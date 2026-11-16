@@ -277,6 +277,19 @@ impl Runtime {
             self.push_log(format!("bilinmeyen uygulama: {app_id}"));
             return;
         };
+        // The Antigravity tree is the biggest download and setup treats it as
+        // optional, so a missing tree is the first thing to rule out: without it
+        // the guest process dies immediately with exit code 1.
+        if app.exec.starts_with("/opt/") {
+            let binary = self.paths.rootfs().join(app.exec.trim_start_matches('/'));
+            let present = binary.exists()
+                || binary.parent().map(|p| p.is_dir()).unwrap_or(false);
+            if !present {
+                self.push_log(format!("{app_id} dosyaları eksik: kurulum yeniden başlatılıyor"));
+                self.start_setup();
+                return;
+            }
+        }
         if self.compositor.is_none() {
             self.push_log("compositor yok, uygulama başlatılamadı".into());
             return;
