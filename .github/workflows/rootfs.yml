@@ -53,6 +53,7 @@ jobs:
           set -euo pipefail
           BASE="https://packages.termux.dev/apt/termux-main/pool/main"
           mkdir -p debs stage out/proot
+          # The Termux pool answers with a redirect, so -L is required.
           for u in \
             p/proot/proot_5.1.107.102_aarch64.deb \
             l/libtalloc/libtalloc_2.5.0_aarch64.deb \
