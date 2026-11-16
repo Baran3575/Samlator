@@ -441,6 +441,25 @@ fn provision(paths: &Paths, config: &mut Config, tx: &Sender<Msg>) -> samlator_c
         let _ = tx.send(Msg::Error(msg.clone()));
         return Err(samlator_core::Error::Config(msg));
     }
+    // Android refuses execve() on files in the app data dir when the app
+    // targets API 29+ (W^X). That turns into a bare "Permission denied" much
+    // later, so prove the binary actually runs right here.
+    match std::process::Command::new(paths.proot()).arg("--version").output() {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let _ = tx.send(Msg::Detail(format!("proot-rs hazır: {text}")));
+        }
+        Err(e) => {
+            let msg = format!("proot-rs çalıştırılamadı: {e} (targetSdk 28 gerekli)");
+            let _ = tx.send(Msg::Error(msg.clone()));
+            return Err(samlator_core::Error::Archive(msg));
+        }
+    }
 
     // 5. First-boot provisioning inside the guest (apt, fonts, dbus).
     let mut markers = InstalledMarkers::load(&paths.installed_marker());

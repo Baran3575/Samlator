@@ -9,8 +9,12 @@ android {
 
     defaultConfig {
         applicationId 'dev.samlator'
-        minSdk 29
-        targetSdk 35
+        // Android 10+ refuses execve() on files inside the app's own data dir
+        // for anything targeting API 29 or newer (W^X). proot-rs and every
+        // guest binary live there, so we stay at 28 like Termux does; the app
+        // is sideloaded, never distributed through Play.
+        minSdk 28
+        targetSdk 28
         versionCode 1
         versionName '0.1.0'
         ndk {
