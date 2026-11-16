@@ -295,7 +295,7 @@ impl Runtime {
             return;
         }
 
-        let mut args = self.config.resolve_args(&app);
+        let mut args = Config::dedupe_flags(&self.config.resolve_args(&app));
         let mut cmd = vec![app.exec.clone()];
         // Electron needs a way to find the guest's own libraries.
         cmd.append(&mut args);

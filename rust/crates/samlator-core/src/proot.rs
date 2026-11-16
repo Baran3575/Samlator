@@ -89,8 +89,9 @@ impl ProotSpec {
             self.rootfs.display().to_string(),
             "--cwd".into(),
             self.cwd.clone(),
-            "--kill-on-exit".into(),
         ];
+        // proot-rs 0.1.0 knows only -b/-w/-r; anything else (e.g. the
+        // `--kill-on-exit` from newer forks) makes it refuse to start.
         for (host, guest) in &self.binds {
             argv.push("--bind".into());
             argv.push(format!("{}:{}", host.display(), guest));

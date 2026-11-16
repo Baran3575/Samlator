@@ -185,16 +185,6 @@ pub fn draw(root: &mut egui::Ui, rt: &mut Runtime, ui_state: &mut UiState) -> Ac
 
     // Where egui believes the finger is. The guest gets its own cursor; this
     // dot is ours, and if it does not follow a touch the events never made it.
-    if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-        root.painter().text(
-            pos,
-            egui::Align2::CENTER_CENTER,
-            "+",
-            egui::FontId::proportional(18.0),
-            ACCENT,
-        );
-    }
-
     action
 }
 

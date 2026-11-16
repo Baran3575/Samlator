@@ -289,6 +289,24 @@ impl Config {
     }
 
     /// Merge a release manifest (same JSON shape) over the built-in defaults.
+    /// Drop repeated long options, keeping the first. Two sources produce the
+    /// guest command line (the app entry and the GPU backend) and Chromium is
+    /// picky about duplicated switches.
+    pub fn dedupe_flags(args: &[String]) -> Vec<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut out: Vec<String> = Vec::new();
+        for arg in args {
+            if arg.starts_with("--") {
+                let name = arg.split('=').next().unwrap_or(arg);
+                if !seen.insert(name.to_string()) {
+                    continue;
+                }
+            }
+            out.push(arg.clone());
+        }
+        out
+    }
+
     pub fn apply_manifest(&mut self, manifest: &Manifest) {
         if let Some(rootfs) = manifest.rootfs.as_ref() {
             if !rootfs.url.is_empty() {
@@ -312,6 +330,29 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_switches_are_removed() {
+        let args: Vec<String> = [
+            "--ozone-platform=wayland",
+            "--disable-dev-shm-usage",
+            "--enable-features=Vulkan",
+            "--disable-dev-shm-usage",
+            "--enable-features=WaylandWindowDecorations",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let out = Config::dedupe_flags(&args);
+        assert_eq!(
+            out,
+            vec![
+                "--ozone-platform=wayland",
+                "--disable-dev-shm-usage",
+                "--enable-features=Vulkan"
+            ]
+        );
+    }
 
     #[test]
     fn manifest_merges_rootfs_and_keeps_apps() {
