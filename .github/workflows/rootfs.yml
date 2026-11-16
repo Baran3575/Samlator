@@ -86,11 +86,12 @@ jobs:
           done
           find stage -maxdepth 8 -name proot -type f | head -3
           mkdir -p out/proot/bin out/proot/lib out/proot/libexec/proot out/proot/tmp
-          cp "$(find stage -type f -path '*/usr/bin/proot' | head -1)" out/proot/bin/proot
-          cp "$(find stage -type f -path '*/usr/libexec/proot/loader' | head -1)" out/proot/libexec/proot/loader
-          cp "$(find stage -type f -path '*/usr/libexec/proot/loader32' | head -1)" out/proot/libexec/proot/loader32
-          cp -a "$(find stage -type f -name 'libtalloc.so.2' | head -1)" out/proot/lib/libtalloc.so.2
-          cp -a "$(find stage -type f -name 'libandroid-shmem.so' | head -1)" out/proot/lib/libandroid-shmem.so
+          cp "$(find stage -path '*/usr/bin/proot' -print -quit)" out/proot/bin/proot
+          # loader/loader32 may be symlinks into loader-m64, so take the whole dir.
+          LOADER_DIR=$(dirname "$(find stage -path '*/usr/libexec/proot/loader' -print -quit)")
+          cp -aL "$LOADER_DIR/." out/proot/libexec/proot/
+          cp -L "$(find stage -name 'libtalloc.so.2' -print -quit)" out/proot/lib/libtalloc.so.2
+          cp -L "$(find stage -name 'libandroid-shmem.so' -print -quit)" out/proot/lib/libandroid-shmem.so
           chmod +x out/proot/bin/proot out/proot/libexec/proot/loader*
           ls -lR out/proot
           tar -C out/proot -cf - bin lib libexec | zstd -q -19 -T0 -o out/proot.tar.zst
