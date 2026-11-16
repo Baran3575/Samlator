@@ -8,8 +8,19 @@ use crate::paths::Paths;
 /// Samlator never needs root: PRoot intercepts path-bearing syscalls with
 /// `ptrace` and rewrites them, which is exactly enough to fake a `chroot` with
 /// ordinary app permissions. No kernel modules, no image files, no VM.
+/// Which PRoot implementation the guest command line is built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProotKind {
+    /// Classic PRoot (Termux lineage): it can load a glibc binary on Android
+    /// because it ships its own loader, and it wants `-r path` style options.
+    Classic,
+    /// The Rust rewrite, whose CLI only knows `--rootfs/--cwd/--bind`.
+    Rs,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProotSpec {
+    pub kind: ProotKind,
     pub rootfs: PathBuf,
     pub binds: Vec<(PathBuf, String)>,
     pub cwd: String,
@@ -19,7 +30,15 @@ pub struct ProotSpec {
 
 impl ProotSpec {
     pub fn new(paths: &Paths, rootfs: &Path) -> Self {
+        // Classic PRoot can actually run a glibc userland on Android 15, so it
+        // wins whenever the payload installed it.
+        let kind = if paths.classic_proot().is_file() {
+            ProotKind::Classic
+        } else {
+            ProotKind::Rs
+        };
         let mut spec = Self {
+            kind,
             rootfs: rootfs.to_path_buf(),
             binds: Vec::new(),
             cwd: "/root".to_string(),
@@ -48,6 +67,36 @@ impl ProotSpec {
         spec.env.insert("XDG_CURRENT_DESKTOP".into(), "Samlator".into());
         spec.env.insert("LANG".into(), "C.UTF-8".into());
         spec.env.insert("TERM".into(), "xterm-256color".into());
+        // Both implementations stage a helper binary in a temp dir; Android has
+        // no /tmp, which is a plain ENOENT for the guest exec.
+        spec.env
+            .insert("TMPDIR".into(), paths.tmp().display().to_string());
+        if kind == ProotKind::Classic {
+            let base = paths.classic_proot();
+            let dir = base
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| paths.base().join("sys/proot"));
+            let libexec = dir.join("libexec").join("proot");
+            spec.env.insert("PROOT_NO_SECCOMP".into(), "1".into());
+            spec.env.insert(
+                "PROOT_TMP_DIR".into(),
+                dir.join("tmp").display().to_string(),
+            );
+            spec.env.insert(
+                "PROOT_LOADER".into(),
+                libexec.join("loader").display().to_string(),
+            );
+            spec.env.insert(
+                "PROOT_LOADER_32".into(),
+                libexec.join("loader32").display().to_string(),
+            );
+            spec.env.insert(
+                "LD_LIBRARY_PATH".into(),
+                dir.join("lib").display().to_string(),
+            );
+        }
         spec.env
             .insert("PATH".into(), "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/antigravity".into());
         spec.env
@@ -83,18 +132,32 @@ impl ProotSpec {
 
     /// Full argv for `proot-rs` (see `scripts/build-proot.sh`).
     pub fn argv(&self, proot: &Path) -> Vec<String> {
-        let mut argv = vec![
-            proot.display().to_string(),
-            "--rootfs".into(),
-            self.rootfs.display().to_string(),
-            "--cwd".into(),
-            self.cwd.clone(),
-        ];
-        // proot-rs 0.1.0 knows only -b/-w/-r; anything else (e.g. the
-        // `--kill-on-exit` from newer forks) makes it refuse to start.
-        for (host, guest) in &self.binds {
-            argv.push("--bind".into());
-            argv.push(format!("{}:{}", host.display(), guest));
+        let mut argv = vec![proot.display().to_string()];
+        match self.kind {
+            ProotKind::Classic => {
+                argv.push("-r".into());
+                argv.push(self.rootfs.display().to_string());
+                argv.push("-w".into());
+                argv.push(self.cwd.clone());
+                for (host, guest) in &self.binds {
+                    argv.push("-b".into());
+                    argv.push(format!("{}:{}", host.display(), guest));
+                }
+                // No setuid in a plain app, so make sure nothing survives us.
+                argv.push("--kill-on-exit".into());
+            }
+            ProotKind::Rs => {
+                // proot-rs 0.1.0 knows only -b/--cwd/--rootfs; anything else
+                // (e.g. `--kill-on-exit`) makes it refuse to start.
+                argv.push("--rootfs".into());
+                argv.push(self.rootfs.display().to_string());
+                argv.push("--cwd".into());
+                argv.push(self.cwd.clone());
+                for (host, guest) in &self.binds {
+                    argv.push("--bind".into());
+                    argv.push(format!("{}:{}", host.display(), guest));
+                }
+            }
         }
         argv.push("--".into());
         argv.extend(self.command.iter().cloned());
@@ -148,6 +211,26 @@ pub const BOOTSTRAP_PACKAGES: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classic_proot_is_preferred_and_uses_its_own_options() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().join("app"));
+        let base = paths.base().join("sys");
+        std::fs::create_dir_all(base.join("proot/bin")).unwrap();
+        std::fs::write(base.join("proot/bin/proot"), b"#!/bin/sh\n").unwrap();
+        let s = ProotSpec::new(&paths, Path::new("/rootfs")).command(vec!["/bin/sh".into()]);
+        assert_eq!(s.kind, ProotKind::Classic);
+        let argv = s.argv(&paths.classic_proot());
+        assert_eq!(argv[1], "-r");
+        assert!(argv.contains(&"--kill-on-exit".to_string()));
+        assert_eq!(s.env.get("PROOT_NO_SECCOMP").map(String::as_str), Some("1"));
+        // Without the payload we stay on the Rust rewrite.
+        let bare = Paths::new(tmp.path().join("nothing"));
+        let s2 = ProotSpec::new(&bare, Path::new("/rootfs"));
+        assert_eq!(s2.kind, ProotKind::Rs);
+        assert_eq!(s2.argv(Path::new("/usr/bin/proot-rs"))[1], "--rootfs");
+    }
 
     fn spec() -> ProotSpec {
         let dir = PathBuf::from("/data/user/0/dev.samlator/files");

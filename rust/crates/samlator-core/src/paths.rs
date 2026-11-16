@@ -76,6 +76,14 @@ impl Paths {
         self.bin().join("proot-rs")
     }
 
+    /// Classic PRoot (the Termux lineage), laid out as `sys/proot/{bin,lib,...}`.
+    ///
+    /// proot-rs 0.1.0 cannot exec a glibc binary on modern Android, while classic
+    /// proot does it with its embedded loader. When present we prefer it.
+    pub fn classic_proot(&self) -> PathBuf {
+        self.base().join("sys").join("proot").join("bin").join("proot")
+    }
+
     /// `$XDG_RUNTIME_DIR/wayland-0`, the socket our Rust compositor listens on.
     pub fn wayland_socket(&self) -> PathBuf {
         self.runtime_dir().join("wayland-0")

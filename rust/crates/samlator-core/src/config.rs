@@ -95,6 +95,8 @@ pub enum PayloadKind {
     AppTree,
     /// A single static executable copied into `sys/bin`.
     Helper,
+    /// A tarball of prebuilt binaries extracted into `sys/<target>`.
+    HelperTree,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

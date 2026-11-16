@@ -85,7 +85,7 @@ impl Runtime {
     pub fn new(paths: Paths, config: Config) -> Self {
         let _ = paths.ensure();
         let ready = rootfs::is_rootfs_ready(&paths.rootfs())
-            && paths.proot().is_file()
+            && (paths.proot().is_file() || paths.classic_proot().is_file())
             && markers_complete(&paths);
         Self {
             paths,
@@ -316,7 +316,9 @@ impl Runtime {
             .command(cmd);
 
         let log_path = self.paths.log_file(&app.id);
-        match Session::spawn(&spec.argv(&self.paths.proot()), &spec.env, &log_path, app.id.clone()) {
+        let proot = self.proot_binary(spec.kind);
+        self.push_log(format!("proot: {}", proot.display()));
+        match Session::spawn(&spec.argv(&proot), &spec.env, &log_path, app.id.clone()) {
             Ok(session) => {
                 self.push_log(format!(
                     "{} başlatıldı (pid {:?})",
@@ -357,7 +359,7 @@ echo "== vulkan"; ls /usr/share/vulkan/icd.d 2>&1 | head -4
                 String::from("-c"),
                 script.to_string(),
             ]);
-        let argv = spec.argv(&self.paths.proot());
+        let argv = spec.argv(&self.proot_binary(spec.kind));
         let out = std::process::Command::new(&argv[0])
             .args(&argv[1..])
             .env_clear()
@@ -384,6 +386,14 @@ echo "== vulkan"; ls /usr/share/vulkan/icd.d 2>&1 | head -4
             self.push_log("oturum kapatıldı".into());
         }
         self.session_label = None;
+    }
+
+    /// Classic PRoot when it is installed, otherwise the Rust rewrite.
+    fn proot_binary(&self, kind: samlator_core::proot::ProotKind) -> std::path::PathBuf {
+        match kind {
+            samlator_core::proot::ProotKind::Classic => self.paths.classic_proot(),
+            samlator_core::proot::ProotKind::Rs => self.paths.proot(),
+        }
     }
 
     pub fn push_log(&mut self, line: String) {
@@ -522,28 +532,76 @@ fn provision(paths: &Paths, config: &mut Config, tx: &Sender<Msg>) -> samlator_c
             return Err(e);
         }
     }
-    if !paths.proot().is_file() {
-        let msg = "proot-rs bulunamadı: manifest yardımcı ikili içermiyor".to_string();
+    // Classic PRoot ships as a tree (binary + loader + libs) and is the one that
+    // can actually load a glibc userland on modern Android.
+    for payload in config
+        .payloads
+        .clone()
+        .into_iter()
+        .filter(|p| p.kind == PayloadKind::HelperTree)
+    {
+        let target = paths.base().join("sys").join(&payload.target);
+        if target.join("bin").join("proot").is_file() {
+            continue;
+        }
+        let _ = tx.send(Msg::Detail(format!("{} indiriliyor", payload.id)));
+        let name = download_name(&payload);
+        let file = paths.downloads().join(&name);
+        let result = download::fetch(&payload.url, &file, &payload.sha256, &payload.id, &mut notify)
+            .and_then(|_| rootfs::extract_archive(&file, &target, payload.strip, &mut notify));
+        let _ = std::fs::remove_file(&file);
+        match result {
+            Ok(()) => {
+                let _ = tx.send(Msg::Detail(format!("{} hazır", payload.id)));
+            }
+            Err(e) => {
+                // Not fatal: proot-rs is still there as a fallback.
+                let _ = tx.send(Msg::Detail(format!("{} atlandı: {e}", payload.id)));
+                let _ = std::fs::remove_dir_all(&target);
+            }
+        }
+    }
+
+    if !paths.proot().is_file() && !paths.classic_proot().is_file() {
+        let msg = "proot bulunamadı: manifest yardımcı ikili içermiyor".to_string();
         let _ = tx.send(Msg::Error(msg.clone()));
         return Err(samlator_core::Error::Config(msg));
     }
     // Android refuses execve() on files in the app data dir when the app
     // targets API 29+ (W^X). That turns into a bare "Permission denied" much
     // later, so prove the binary actually runs right here.
-    match std::process::Command::new(paths.proot()).arg("--version").output() {
-        Ok(out) => {
-            let text = String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let _ = tx.send(Msg::Detail(format!("proot-rs hazır: {text}")));
+    let mut smoke = |bin: &std::path::Path| -> Result<String, std::io::Error> {
+        let out = std::process::Command::new(bin).arg("--version").output()?;
+        let text = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        Ok(text)
+    };
+    if paths.classic_proot().is_file() {
+        match smoke(&paths.classic_proot()) {
+            Ok(text) => {
+                let _ = tx.send(Msg::Detail(format!("proot (klasik) hazır: {text}")));
+            }
+            Err(e) => {
+                // A broken classic build must not shadow the fallback.
+                let _ = tx.send(Msg::Detail(format!("klasik proot atıldı: {e}")));
+                let _ = std::fs::remove_dir_all(paths.base().join("sys/proot"));
+            }
         }
-        Err(e) => {
-            let msg = format!("proot-rs çalıştırılamadı: {e} (targetSdk 28 gerekli)");
-            let _ = tx.send(Msg::Error(msg.clone()));
-            return Err(samlator_core::Error::Archive(msg));
+    }
+    if !paths.classic_proot().is_file() {
+        match smoke(&paths.proot()) {
+            Ok(text) => {
+                let _ = tx.send(Msg::Detail(format!("proot-rs hazır: {text}")));
+            }
+            Err(e) => {
+                let msg = format!("proot çalıştırılamadı: {e} (targetSdk 28 gerekli)");
+                let _ = tx.send(Msg::Error(msg.clone()));
+                return Err(samlator_core::Error::Archive(msg));
+            }
         }
     }
 
