@@ -79,13 +79,18 @@ jobs:
           ls -l debs
           for d in debs/*.deb; do
             ( cd debs && ar x "$(basename "$d")" )
-            tar -xf debs/data.tar.* -C stage --strip-components=5
+            # Termux debs use ./data/data/com.termux/files/usr, so locate files
+            # instead of guessing how many components to strip.
+            tar -xf debs/data.tar.* -C stage
             rm -f debs/data.tar.*
           done
+          find stage -maxdepth 8 -name proot -type f | head -3
           mkdir -p out/proot/bin out/proot/lib out/proot/libexec/proot out/proot/tmp
-          cp stage/bin/proot out/proot/bin/
-          cp stage/libexec/proot/loader stage/libexec/proot/loader32 out/proot/libexec/proot/
-          cp -a stage/lib/libtalloc.so* stage/lib/libandroid-shmem.so* out/proot/lib/ 2>/dev/null || true
+          cp "$(find stage -type f -path '*/usr/bin/proot' | head -1)" out/proot/bin/proot
+          cp "$(find stage -type f -path '*/usr/libexec/proot/loader' | head -1)" out/proot/libexec/proot/loader
+          cp "$(find stage -type f -path '*/usr/libexec/proot/loader32' | head -1)" out/proot/libexec/proot/loader32
+          cp -a "$(find stage -type f -name 'libtalloc.so.2' | head -1)" out/proot/lib/libtalloc.so.2
+          cp -a "$(find stage -type f -name 'libandroid-shmem.so' | head -1)" out/proot/lib/libandroid-shmem.so
           chmod +x out/proot/bin/proot out/proot/libexec/proot/loader*
           ls -lR out/proot
           tar -C out/proot -cf - bin lib libexec | zstd -q -19 -T0 -o out/proot.tar.zst
