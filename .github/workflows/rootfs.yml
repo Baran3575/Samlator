@@ -51,21 +51,35 @@ jobs:
       - name: Classic PRoot
         run: |
           set -euo pipefail
-          BASE="https://packages.termux.dev/apt/termux-main/pool/main"
           mkdir -p debs stage out/proot
-          # The Termux pool answers with a redirect, so -L is required.
-          for u in \
-            p/proot/proot_5.1.107.102_aarch64.deb \
-            l/libtalloc/libtalloc_2.5.0_aarch64.deb \
-            a/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb
-          do
-            curl -fsSL --retry 3 -o "debs/$(basename "$u")" "$BASE/$u"
-            ls -l "debs/$(basename "$u")"
-          done
+          fetch() {
+            for base in \
+              https://packages-cf.termux.dev/apt/termux-main \
+              https://packages.termux.dev/apt/termux-main
+            do
+              for try in 1 2 3; do
+                case "$1" in
+                  proot) name="proot_5.1.107.102_aarch64.deb"; dir="p/proot" ;;
+                  talloc) name="libtalloc_2.5.0_aarch64.deb"; dir="libt/libtalloc" ;;
+                  shmem) name="libandroid-shmem_0.7_aarch64.deb"; dir="liba/libandroid-shmem" ;;
+                esac
+                if curl -fsSL --retry 2 -o "debs/$name" "$base/pool/main/$dir/$name"; then
+                  echo "ok $name from $base"
+                  return 0
+                fi
+                sleep 3
+              done
+            done
+            echo "could not fetch $1" >&2
+            return 1
+          }
+          fetch proot
+          fetch talloc
+          fetch shmem
+          ls -l debs
           for d in debs/*.deb; do
             ( cd debs && ar x "$(basename "$d")" )
-            tar -xf debs/data.tar.* -C stage --strip-components=5 2>/dev/null || \
-              tar -xJf debs/data.tar.xz -C stage --strip-components=5
+            tar -xf debs/data.tar.* -C stage --strip-components=5
             rm -f debs/data.tar.*
           done
           mkdir -p out/proot/bin out/proot/lib out/proot/libexec/proot out/proot/tmp
