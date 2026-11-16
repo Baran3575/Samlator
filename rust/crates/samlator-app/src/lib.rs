@@ -27,6 +27,32 @@ mod android_entry {
 
     use crate::pointer;
 
+    /// Seconds since the first frame; egui uses this only to animate.
+    fn now_secs() -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+    }
+
+    /// Short description of a motion event, for the input trace in boot.log.
+    trait ActionHint {
+        fn action_hint(&self) -> String;
+    }
+
+    impl ActionHint for android_activity::input::MotionEvent<'_> {
+        fn action_hint(&self) -> String {
+            let p = self.pointer_at_index(0);
+            format!(
+                "{:?} ({:.0},{:.0}) fingers={}",
+                self.action(),
+                p.raw_x(),
+                p.raw_y(),
+                self.pointer_count()
+            )
+        }
+    }
+
     use android_activity::input::{Axis, KeyAction, MotionAction};
     use android_activity::input::InputEvent;
     use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
@@ -159,6 +185,7 @@ mod android_entry {
         let mut setup_started = false;
         let mut gpu_error: Option<String> = None;
         let mut last_frame_seq = 0u64;
+        let mut input_debug = 0u32;
 
         while !quit {
             let mut need_redraw = false;
@@ -217,17 +244,36 @@ mod android_entry {
             }
 
             let mut events: Vec<egui::Event> = Vec::new();
-            if input_available {
+            let mut got_input = false;
+            // Poll unconditionally: depending on MainEvent::InputAvailable meant
+            // a missed wake-up silently froze every widget in the UI.
+            {
                 if let Ok(mut iter) = app.input_events_iter() {
                     loop {
-                        let handled = iter.next(|event| {
+                        let stepped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            iter.next(|event| {
                             match event {
                                 InputEvent::MotionEvent(m) => {
-                                    let fingers = m.pointer_count().max(1);
+                                    if m.pointer_count() == 0 {
+                                        // Indexing pointer 0 here panicked and the
+                                        // whole event loop died, leaving a frozen
+                                        // copy of the last frame on screen.
+                                        return InputStatus::Handled;
+                                    }
+                                    if input_debug < 40 {
+                                        input_debug += 1;
+                                        let line = format!("girdi #{input_debug} {}", m.action_hint());
+                                        boot::note(&rt.paths, line.clone());
+                                        if input_debug <= 8 {
+                                            rt.push_log(line);
+                                        }
+                                    }
+                                    let count = m.pointer_count();
+                                    let fingers = count.max(1);
                                     let first = m.pointer_at_index(0);
                                     let (px, py) = (first.raw_x() as f64, first.raw_y() as f64);
                                     let mut mid_y = 0.0;
-                                    for i in 0..fingers {
+                                    for i in 0..count {
                                         mid_y += m.pointer_at_index(i).raw_y() as f64;
                                     }
                                     mid_y /= fingers as f64;
@@ -313,12 +359,27 @@ mod android_entry {
                                 }
                                 _ => {}
                             }
+                            got_input = true;
                             InputStatus::Handled
-                        });
+                        })
+                        }));
+                        let handled = match stepped {
+                            Ok(h) => h,
+                            Err(panic) => {
+                                let why = boot::describe_panic(&panic);
+                                boot::note(&rt.paths, format!("input panic: {why}"));
+                                rt.push_log(format!("girdi hatası: {why}"));
+                                input_debug += 1;
+                                false
+                            }
+                        };
                         if !handled {
                             break;
                         }
                     }
+                } else if input_debug == 0 {
+                    input_debug = 1;
+                    boot::note(&rt.paths, "input: event queue unavailable");
                 }
             }
 
@@ -338,16 +399,26 @@ mod android_entry {
 
             if let Some(g) = gpu.as_mut() {
                 // Painting every frame would idle the GPU at 60 Hz for nothing.
-                if need_redraw || input_available || rt.is_busy() || new_frame {
+                if need_redraw || got_input || rt.is_busy() || new_frame {
                     let raw = egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
                             egui::vec2(size.0 as f32 / scale, size.1 as f32 / scale),
                         )),
+                        time: Some(now_secs()),
+                        predicted_dt: 1.0 / 60.0,
+                        focused: true,
                         events,
                         ..Default::default()
                     };
                     let action = g.render(&mut rt, &mut ui_state, raw).unwrap_or(Action::None);
+                    if got_input && input_debug <= 12 {
+                        if let Some(pos) = g.probe_pointer() {
+                            rt.push_log(format!("egui imleç: {:.0},{:.0}", pos.0, pos.1));
+                        } else {
+                            rt.push_log("egui imleç: yok".into());
+                        }
+                    }
 
                     // Keys the on-screen keyboard produced this frame. Latched
                     // modifiers have to be pressed *around* the key, otherwise a
@@ -391,9 +462,13 @@ mod android_entry {
                         }
                         Action::StopSession => rt.stop_session(),
                         Action::ToggleSettings => {
+                            rt.push_log("eylem: ayarlar".into());
                             ui_state.show_settings = !ui_state.show_settings
                         }
-                        Action::ToggleLogs => ui_state.show_logs = !ui_state.show_logs,
+                        Action::ToggleLogs => {
+                            rt.push_log("eylem: log penceresi".into());
+                            ui_state.show_logs = !ui_state.show_logs;
+                        }
                         Action::Reset => {
                             let _ = std::fs::remove_file(rt.paths.installed_marker());
                             rt.push_log("kurulum işareti silindi; yeniden kurulum gerekli".into());

@@ -179,6 +179,18 @@ pub fn draw(root: &mut egui::Ui, rt: &mut Runtime, ui_state: &mut UiState) -> Ac
         logs_window(&ctx, rt, ui_state);
     }
 
+    // Where egui believes the finger is. The guest gets its own cursor; this
+    // dot is ours, and if it does not follow a touch the events never made it.
+    if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
+        egui::Area::new(egui::Id::unique("samlator-dot"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .interactable(false)
+            .show(&ctx, |ui| {
+                ui.label(RichText::new("+").color(ACCENT).size(18.0).strong());
+            });
+    }
+
     action
 }
 

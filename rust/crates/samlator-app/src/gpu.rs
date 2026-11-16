@@ -203,6 +203,13 @@ impl Gpu {
         self.surface.configure(&self.device, &self.config);
     }
 
+    /// Where egui thinks the pointer is, in points.
+    pub fn probe_pointer(&self) -> Option<(f32, f32)> {
+        self.egui_ctx
+            .input(|i| i.pointer.latest_pos())
+            .map(|p| (p.x, p.y))
+    }
+
     pub fn pixels_per_point(&self) -> f32 {
         self.egui_ctx.pixels_per_point()
     }
