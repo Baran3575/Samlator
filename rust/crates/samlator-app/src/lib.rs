@@ -232,7 +232,11 @@ mod android_entry {
                                     }
                                     mid_y /= fingers as f64;
 
-                                    let (tx, ty) = pointer.points(scale);
+                                    // egui must see *this* event's position. Reading
+                                    // `pointer.points()` here used the previous
+                                    // event, so the press and the release landed on
+                                    // different widgets and no button ever fired.
+                                    let (tx, ty) = ((px as f32) / scale, (py as f32) / scale);
                                     ui_state.pointer = (tx as f64, ty as f64);
                                     // The on-screen keyboard covers the bottom half;
                                     // touches there belong to egui, not the guest.
@@ -241,6 +245,7 @@ mod android_entry {
                                     let mut acted = Vec::new();
                                     match m.action() {
                                         MotionAction::Down => {
+                                            events.push(egui::Event::PointerMoved(egui::pos2(tx, ty)));
                                             events.push(egui::Event::PointerButton {
                                                 pos: egui::pos2(tx, ty),
                                                 button: egui::PointerButton::Primary,
@@ -376,8 +381,14 @@ mod android_entry {
                     }
 
                     match action {
-                        Action::Setup => rt.start_setup(),
-                        Action::Launch(id) => rt.launch(&id),
+                        Action::Setup => {
+                            rt.push_log("eylem: kurulum başlatıldı".into());
+                            rt.start_setup()
+                        }
+                        Action::Launch(id) => {
+                            rt.push_log(format!("eylem: {id} başlat"));
+                            rt.launch(&id)
+                        }
                         Action::StopSession => rt.stop_session(),
                         Action::ToggleSettings => {
                             ui_state.show_settings = !ui_state.show_settings
