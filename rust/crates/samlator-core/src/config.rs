@@ -190,7 +190,7 @@ impl Default for Config {
                 AppEntry {
                     id: "antigravity".into(),
                     name: "Antigravity".into(),
-                    exec: "/opt/antigravity/antigravity".into(),
+                    exec: "/opt/antigravity/antigravity-ide".into(),
                     args: vec!["%GPU%".into(), "--disable-dev-shm-usage".into()],
                     working_dir: "/root".into(),
                     gpu: None,

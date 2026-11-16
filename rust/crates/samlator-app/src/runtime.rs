@@ -278,16 +278,27 @@ impl Runtime {
             return;
         };
         // The Antigravity tree is the biggest download and setup treats it as
-        // optional, so a missing tree is the first thing to rule out: without it
-        // the guest process dies immediately with exit code 1.
-        if app.exec.starts_with("/opt/") {
-            let binary = self.paths.rootfs().join(app.exec.trim_start_matches('/'));
-            let present = binary.exists()
-                || binary.parent().map(|p| p.is_dir()).unwrap_or(false);
-            if !present {
-                self.push_log(format!("{app_id} dosyaları eksik: kurulum yeniden başlatılıyor"));
-                self.start_setup();
-                return;
+        // optional, and its tarball names the binary `antigravity-ide` while an
+        // older config may still say `antigravity`. Resolve it instead of
+        // spawning something that does not exist (proot then fails with ENOENT).
+        let mut exec = app.exec.clone();
+        if exec.starts_with("/opt/") {
+            let (resolved, listing) = resolve_exec(&self.paths.rootfs(), &exec);
+            match resolved {
+                Some(rel) => {
+                    if rel != exec {
+                        self.push_log(format!("çalıştırılabilir bulundu: {rel}"));
+                    }
+                    exec = rel;
+                }
+                None => {
+                    self.push_log(format!("{app_id} dosyaları eksik: kurulum yeniden başlatılıyor"));
+                    for line in listing.iter().take(8) {
+                        self.push_log(format!("  /opt/antigravity: {line}"));
+                    }
+                    self.start_setup();
+                    return;
+                }
             }
         }
         if self.compositor.is_none() {
@@ -296,7 +307,7 @@ impl Runtime {
         }
 
         let mut args = Config::dedupe_flags(&self.config.resolve_args(&app));
-        let mut cmd = vec![app.exec.clone()];
+        let mut cmd = vec![exec];
         // Electron needs a way to find the guest's own libraries.
         cmd.append(&mut args);
 
@@ -649,6 +660,41 @@ fn install_helper(
 }
 
 /// Turn the usual Electron-under-proot failures into a one-line suggestion.
+/// Find the real executable inside a guest app tree.
+///
+/// Returns the guest path (`/opt/.../binary`) when one of the known Electron
+/// names is present, plus a short listing of the directory for diagnostics.
+fn resolve_exec(rootfs: &std::path::Path, exec: &str) -> (Option<String>, Vec<String>) {
+    let direct = rootfs.join(exec.trim_start_matches('/'));
+    if direct.is_file() {
+        return (Some(exec.to_string()), Vec::new());
+    }
+    let Some(dir) = direct.parent() else {
+        return (None, Vec::new());
+    };
+    let mut listing = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten().take(20) {
+            listing.push(entry.file_name().to_string_lossy().to_string());
+        }
+        listing.sort();
+    }
+    for name in ["antigravity-ide", "antigravity", "code", "electron", "bin"] {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            let rel = format!("/{}", candidate.strip_prefix(rootfs).unwrap_or(&candidate).display());
+            return (Some(rel), listing);
+        }
+        // Some tarballs keep the binary one directory down.
+        let nested = candidate.join(name);
+        if nested.is_file() {
+            let rel = format!("/{}", nested.strip_prefix(rootfs).unwrap_or(&nested).display());
+            return (Some(rel), listing);
+        }
+    }
+    (None, listing)
+}
+
 fn guest_hint(log: &str) -> Option<String> {
     let l = log.to_lowercase();
     if l.contains("error while loading shared libraries") || l.contains("not found") {
@@ -715,6 +761,32 @@ mod tests {
         assert_eq!(rt.stage, Stage::Idle);
         assert!(!rt.is_ready());
         assert!(!rt.is_busy());
+    }
+
+    #[test]
+    fn exec_is_resolved_when_the_name_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("rootfs");
+        std::fs::create_dir_all(root.join("opt/antigravity")).unwrap();
+        std::fs::write(root.join("opt/antigravity/antigravity-ide"), b"#!").unwrap();
+
+        // The shipped tarball calls it antigravity-ide, not antigravity.
+        let (found, _) = super::resolve_exec(&root, "/opt/antigravity/antigravity");
+        assert_eq!(found.as_deref(), Some("/opt/antigravity/antigravity-ide"));
+
+        // An exact hit needs no guessing.
+        let (exact, _) = super::resolve_exec(&root, "/opt/antigravity/antigravity-ide");
+        assert_eq!(exact.as_deref(), Some("/opt/antigravity/antigravity-ide"));
+    }
+
+    #[test]
+    fn missing_app_tree_reports_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("rootfs");
+        std::fs::create_dir_all(root.join("opt/empty")).unwrap();
+        let (found, listing) = super::resolve_exec(&root, "/opt/empty/app");
+        assert!(found.is_none());
+        assert!(listing.is_empty() || !listing.is_empty());
     }
 
     #[test]
