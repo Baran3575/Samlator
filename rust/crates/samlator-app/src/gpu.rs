@@ -280,15 +280,18 @@ impl Gpu {
 
         let cell = std::cell::Cell::new(Some(paint));
         let full = ctx.run_ui(raw_input, |root| {
-            let screen = root.max_rect().size();
+            let screen_rect = root.max_rect();
             if let Some(id) = desktop {
-                let inner = root.ctx().clone();
-                egui::Area::new(egui::Id::unique("samlator-desktop"))
-                    .order(egui::Order::Background)
-                    .fixed_pos(egui::Pos2::ZERO)
-                    .show(&inner, |ui| {
-                        ui.add(egui::Image::new((id, screen)));
-                    });
+                // Painted into the root layer on purpose. An `Area` gets its own
+                // layer, created after the root one, so egui considers it the
+                // topmost layer everywhere and every widget underneath stops
+                // receiving clicks. Verified by `probe_area_layer_blocks_clicks`.
+                root.painter().image(
+                    id,
+                    screen_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
             }
             if let Some(paint) = cell.take() {
                 paint(&root.ctx().clone(), root);

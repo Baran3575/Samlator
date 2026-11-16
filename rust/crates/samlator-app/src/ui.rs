@@ -182,13 +182,13 @@ pub fn draw(root: &mut egui::Ui, rt: &mut Runtime, ui_state: &mut UiState) -> Ac
     // Where egui believes the finger is. The guest gets its own cursor; this
     // dot is ours, and if it does not follow a touch the events never made it.
     if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-        egui::Area::new(egui::Id::unique("samlator-dot"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(pos)
-            .interactable(false)
-            .show(&ctx, |ui| {
-                ui.label(RichText::new("+").color(ACCENT).size(18.0).strong());
-            });
+        root.painter().text(
+            pos,
+            egui::Align2::CENTER_CENTER,
+            "+",
+            egui::FontId::proportional(18.0),
+            ACCENT,
+        );
     }
 
     action
@@ -332,6 +332,135 @@ mod tests {
     use super::*;
     use samlator_core::config::Config;
     use samlator_core::paths::Paths;
+
+    fn click_at(ctx: &egui::Context, screen: egui::Rect, p: egui::Pos2, draw: impl Fn(&mut egui::Ui) -> u32, clicks: &mut u32) {
+        let steps = [
+            vec![],
+            vec![egui::Event::PointerMoved(p)],
+            vec![egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+            vec![egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+        ];
+        for events in steps {
+            let raw = egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(1.0),
+                focused: true,
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |root| {
+                *clicks += draw(root);
+            });
+            // epaint panics on dropped deltas; a real renderer uploads them.
+            out.textures_delta.clear();
+        }
+    }
+
+    /// The composited desktop is painted with the root painter, in the same
+    /// layer as the bars. Drawing it as a full-screen `Area` instead put a newer
+    /// layer on top of everything, egui then treated every widget as covered and
+    /// no button responded to a touch.
+    #[test]
+    fn desktop_image_does_not_block_widgets() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
+        let mut clicks = 0;
+        click_at(
+            &ctx,
+            screen,
+            egui::pos2(100.0, 20.0),
+            |root| {
+                root.painter().image(
+                    egui::TextureId::User(7),
+                    screen,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                let mut hit = 0;
+                egui::Panel::top("bar").show(root, |ui| {
+                    if ui.add_sized([300.0, 40.0], egui::Button::new("A")).clicked() {
+                        hit = 1;
+                    }
+                });
+                hit
+            },
+            &mut clicks,
+        );
+        assert_eq!(clicks, 1, "top-bar buttons must stay clickable over the desktop");
+    }
+
+    /// The negative case, kept on purpose: a full-screen image drawn as an
+    /// `Area` swallows every click (0 responses), which is exactly the bug users
+    /// saw as "no button works". The desktop is therefore painted with the root
+    /// painter; if anyone reintroduces an Area here, this test fails.
+    #[test]
+    fn area_covered_widgets_lose_input() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
+        let mut clicks = 0;
+        click_at(
+            &ctx,
+            screen,
+            egui::pos2(100.0, 20.0),
+            |root| {
+                let inner = root.ctx().clone();
+                egui::Area::new(egui::Id::unique("desk"))
+                    .order(egui::Order::Background)
+                    .fixed_pos(egui::Pos2::ZERO)
+                    .show(&inner, |ui| {
+                        ui.add(egui::Image::new((egui::TextureId::User(7), screen.size())));
+                    });
+                let mut hit = 0;
+                egui::Panel::top("bar").show(root, |ui| {
+                    if ui.add_sized([300.0, 40.0], egui::Button::new("A")).clicked() {
+                        hit = 1;
+                    }
+                });
+                hit
+            },
+            &mut clicks,
+        );
+        assert_eq!(
+            clicks, 0,
+            "a full-screen Area steals input; paint the desktop in the root layer instead"
+        );
+    }
+
+    /// Same again with the dock, which is what the user taps.
+    #[test]
+    fn dock_buttons_are_clickable() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
+        let mut clicks = 0;
+        click_at(
+            &ctx,
+            screen,
+            egui::pos2(60.0, 380.0),
+            |root| {
+                let mut hit = 0;
+                egui::Panel::bottom("dock").show(root, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([100.0, 30.0], egui::Button::new("Antigravity")).clicked() {
+                            hit = 1;
+                        }
+                    });
+                });
+                hit
+            },
+            &mut clicks,
+        );
+        assert_eq!(clicks, 1, "dock buttons must react to a tap");
+    }
 
     #[test]
     fn ui_draws_without_panicking() {
