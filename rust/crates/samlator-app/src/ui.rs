@@ -17,6 +17,7 @@ pub enum Action {
     Reset,
     ToggleLogs,
     ToggleSettings,
+    Diagnose,
     Quit,
 }
 
@@ -80,6 +81,9 @@ pub fn draw(root: &mut egui::Ui, rt: &mut Runtime, ui_state: &mut UiState) -> Ac
                     }
                     if ui.button("Log").clicked() {
                         action = Action::ToggleLogs;
+                    }
+                    if ui.button("Tanı").clicked() {
+                        action = Action::Diagnose;
                     }
                     if ui.button("Ayarlar").clicked() {
                         action = Action::ToggleSettings;

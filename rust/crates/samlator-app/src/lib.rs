@@ -461,6 +461,11 @@ mod android_entry {
                             rt.launch(&id)
                         }
                         Action::StopSession => rt.stop_session(),
+                        Action::Diagnose => {
+                            rt.push_log("eylem: tanı".into());
+                            rt.diagnose();
+                            ui_state.show_logs = true;
+                        }
                         Action::ToggleSettings => {
                             rt.push_log("eylem: ayarlar".into());
                             ui_state.show_settings = !ui_state.show_settings

@@ -52,6 +52,12 @@ impl ProotSpec {
             .insert("PATH".into(), "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/antigravity".into());
         spec.env
             .insert("MOZ_ENABLE_WAYLAND".into(), "1".into());
+        // Electron prints its real startup errors only with this on, and the
+        // sandbox cannot work under PRoot.
+        spec.env
+            .insert("ELECTRON_ENABLE_LOGGING".into(), "1".into());
+        spec.env
+            .insert("ELECTRON_DISABLE_SANDBOX".into(), "1".into());
         spec
     }
 

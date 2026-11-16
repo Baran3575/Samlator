@@ -37,6 +37,11 @@ impl GpuBackend {
             "--disable-features=WaylandWindowDecorations".into(),
             "--disable-gpu-sandbox".into(),
             "--no-sandbox".into(),
+            "--disable-setuid-sandbox".into(),
+            "--disable-seccomp-filter-sandbox".into(),
+            // PRoot makes Chromium's zygote fail to fork; without this the
+            // renderer dies before a window ever appears.
+            "--no-zygote".into(),
             // PRoot confuses Chromium's zygote; one process avoids the hangs.
             "--in-process-gpu".into(),
             // /dev/shm inside the guest is a directory, not a tmpfs.

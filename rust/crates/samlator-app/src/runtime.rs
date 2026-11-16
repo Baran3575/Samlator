@@ -229,20 +229,37 @@ impl Runtime {
             }
         }
 
-        if let Some(session) = self.session.as_mut() {
-            match session.poll() {
-                SessionState::Running => {}
-                SessionState::Exited(code) => {
-                    self.push_log(format!("süreç çıktı, kod {code}"));
-                    self.session_label = None;
-                    self.session = None;
+        // Collect the outcome first: pushing to the log needs `&mut self`, which
+        // cannot overlap the session borrow.
+        let outcome = match self.session.as_mut() {
+            Some(session) => match session.poll() {
+                SessionState::Running => None,
+                SessionState::Exited(code) => Some((Some(code), None, session.log_text())),
+                SessionState::Signaled(sig) => Some((None, Some(sig), session.log_text())),
+            },
+            None => None,
+        };
+        if let Some((code, signal, tail)) = outcome {
+            if let Some(sig) = signal {
+                self.push_log(format!("süreç sinyalle bitti: {sig}"));
+            } else {
+                self.push_log(format!("süreç çıktı, kod {}", code.unwrap_or(-1)));
+            }
+            if code.unwrap_or(1) != 0 {
+                // The reason lives in the guest's own output; without it all
+                // anybody ever sees is "exited with 1".
+                let last: Vec<&str> = tail.lines().rev().take(12).collect();
+                for line in last.iter().rev() {
+                    if !line.trim().is_empty() {
+                        self.push_log(format!("misafir: {}", line.trim()));
+                    }
                 }
-                SessionState::Signaled(sig) => {
-                    self.push_log(format!("süreç sinyalle bitti: {sig}"));
-                    self.session_label = None;
-                    self.session = None;
+                if let Some(hint) = guest_hint(&tail) {
+                    self.push_log(hint);
                 }
             }
+            self.session_label = None;
+            self.session = None;
         }
     }
 
@@ -289,6 +306,51 @@ impl Runtime {
                 self.push_log(format!("başlatma hatası: {e}"));
                 self.error = Some(e.to_string());
             }
+        }
+    }
+
+    /// Run a short health check inside the guest and copy the output to the log.
+    pub fn diagnose(&mut self) {
+        if !self.is_ready() {
+            self.push_log("tanı: önce kurulum gerekli".into());
+            return;
+        }
+        let script = r#"echo "== cekirdek"; uname -m
+echo "== dri"; ls /dev/dri 2>&1 | head -4
+echo "== wayland"; ls "$XDG_RUNTIME_DIR" 2>&1 | head -4
+echo "== antigravity"; ls /opt/antigravity 2>&1 | head -8
+echo "== eksik kutuphane"
+for f in /opt/antigravity/antigravity /opt/antigravity/chrome-sandbox; do
+    [ -e "$f" ] && ldd "$f" 2>&1 | grep "not found"
+done | sort -u
+echo "== gtk/nss"; ls /usr/lib/aarch64-linux-gnu/libgtk-3.so.0 /usr/lib/aarch64-linux-gnu/libnss3.so 2>&1
+echo "== vulkan"; ls /usr/share/vulkan/icd.d 2>&1 | head -4
+"#;
+        let spec = ProotSpec::new(&self.paths, &self.paths.rootfs())
+            .cwd(String::from("/root"))
+            .command(vec![
+                String::from("/bin/sh"),
+                String::from("-c"),
+                script.to_string(),
+            ]);
+        let argv = spec.argv(&self.paths.proot());
+        let out = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .env_clear()
+            .envs(&spec.env)
+            .output();
+        match out {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout).to_string();
+                let err = String::from_utf8_lossy(&out.stderr).to_string();
+                for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                    self.push_log(format!("tanı: {}", line.trim()));
+                }
+                for line in err.lines().filter(|l| !l.trim().is_empty()).take(6) {
+                    self.push_log(format!("tanı! {}", line.trim()));
+                }
+            }
+            Err(e) => self.push_log(format!("tanı çalıştırılamadı: {e}")),
         }
     }
 
@@ -571,6 +633,22 @@ fn install_helper(
     make_executable(&dest)?;
     let _ = std::fs::remove_file(&file);
     Ok(())
+}
+
+/// Turn the usual Electron-under-proot failures into a one-line suggestion.
+fn guest_hint(log: &str) -> Option<String> {
+    let l = log.to_lowercase();
+    if l.contains("error while loading shared libraries") || l.contains("not found") {
+        Some("ipucu: eksik kütüphane — «Tanı» düğmesi tam listeyi gösterir".into())
+    } else if l.contains("cannot open display") || l.contains("failed to connect to wayland") {
+        Some("ipucu: Wayland bağlantısı kurulamadı, compositor çalışıyor mu?".into())
+    } else if l.contains("sandbox") {
+        Some("ipucu: sandbox hatası — --no-sandbox ile tekrar deneyin".into())
+    } else if l.contains("no such file or directory") {
+        Some("ipucu: çalıştırılabilir bulunamadı, paket gerçekten indi mi?".into())
+    } else {
+        None
+    }
 }
 
 fn fetch_manifest(url: &str, downloads: &std::path::Path) -> Option<String> {
