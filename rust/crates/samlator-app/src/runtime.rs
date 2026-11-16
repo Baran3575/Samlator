@@ -84,14 +84,22 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(paths: Paths, config: Config) -> Self {
         let _ = paths.ensure();
-        let ready = rootfs::is_rootfs_ready(&paths.rootfs())
-            && (paths.proot().is_file() || paths.classic_proot().is_file())
-            && markers_complete(&paths);
+        // Classics PRoot is the only engine that can actually run the guest on
+        // Android 15, so an install that still lacks it is treated as needing
+        // setup: one tap fetches the 120 KB payload, the rootfs is untouched.
+        let engine_ok = paths.classic_proot().is_file();
+        let tree_ok = rootfs::is_rootfs_ready(&paths.rootfs());
+        let ready = tree_ok && paths.proot().is_file() && markers_complete(&paths) && engine_ok;
+        let detail = if ready || engine_ok || !tree_ok {
+            String::new()
+        } else {
+            String::from("PRoot motoru güncellenecek: Kurulum'a bas")
+        };
         Self {
             paths,
             config,
             stage: if ready { Stage::Ready } else { Stage::Idle },
-            detail: String::new(),
+            detail,
             progress: if ready { 1.0 } else { 0.0 },
             error: None,
             session_label: None,
